@@ -235,7 +235,7 @@ enum GlobalShortcutSelfTest {
         }
 
         let readyFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("codexu-hotkey-self-test-\(UUID().uuidString)")
+            .appendingPathComponent("codexusage-hotkey-self-test-\(UUID().uuidString)")
         let helper = Process()
         helper.executableURL = executableURL
         helper.arguments = ["--hold-exclusive-hotkey", readyFile.path]

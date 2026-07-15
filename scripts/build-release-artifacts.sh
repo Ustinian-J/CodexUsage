@@ -22,6 +22,7 @@ build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-status-item
 build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-rate-limits
 build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-task-progress
 build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-quota-pace
+build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-quota-alerts
 build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-particle-animation
 build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-updates
 ./scripts/test-parsers.sh

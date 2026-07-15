@@ -49,7 +49,7 @@ hdiutil detach "$mount_dir"
 rmdir "$mount_dir"
 ```
 
-The repository CI performs these checks for the Intel artifact on a clean `macos-15-intel` runner.
+The repository CI performs these checks for Intel on `macos-15-intel` and Apple Silicon on the arm64 `macos-15` runner.
 
 ## CI Supply-Chain Policy
 

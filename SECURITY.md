@@ -40,11 +40,16 @@ CodexUsage must not silently download, install, replace, or relaunch the app as 
 
 Automatic update checks are disabled by default. Enabling them is an explicit user setting.
 
+## Local Notifications
+
+Quota alerts are disabled by default. Enabling them explicitly requests macOS notification permission. Alert state stores only the quota window kind, reset timestamp, and thresholds already emitted. Notification content contains only the window label, remaining percentage, and reset time; it must not contain account, thread, prompt, task, path, token credential, or transcript data.
+
 ## Build Supply Chain
 
 - The repository has no third-party package manager dependency or vendored binary framework.
 - CI permissions are limited to `contents: read` and CI does not consume repository secrets.
 - CI may use only GitHub-owned actions pinned to full commit SHAs.
 - `scripts/test-ci-security.sh` enforces the current action allowlist and rejects floating tags.
+- `scripts/test-source-security.sh` rejects credential access, network write methods, downloaders, remote shells, persistence helpers, third-party dependency manifests, and precompiled libraries.
 - Release artifacts include SHA-256 checksums and are verified for DMG integrity, Mach-O architecture, and code signature before installation.
 - Developer ID notarization automation is deliberately absent until it receives a separate credential and workflow review.

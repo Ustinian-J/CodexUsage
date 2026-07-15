@@ -223,7 +223,7 @@ struct GitHubReleaseInfo: Codable, Equatable, Identifiable {
         let expectedVersion = version?.description.lowercased()
         return matching.first { asset in
             let normalized = asset.name.lowercased()
-            return normalized.contains("codexu")
+            return normalized.contains("codexusage")
                 && expectedVersion.map { normalized.contains($0) } ?? true
         } ?? matching.first
     }

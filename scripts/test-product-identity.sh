@@ -15,5 +15,7 @@ grep -q 'owner: String = "Ustinian-J"' Sources/CodexUsageWidget/Services/GitHubR
 grep -q 'repo: String = "CodexUsage"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
 grep -q 'automaticUpdateChecksEnabled = false' Sources/CodexUsageWidget/main.swift
 ! rg -n 'shanggqm/codexU' Sources Resources Makefile
+! rg -n -i '\bcodexu\b|codexu\.' Sources Resources Makefile scripts \
+  --glob '!test-product-identity.sh'
 
 echo "product identity checks passed"

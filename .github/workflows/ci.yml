@@ -9,10 +9,26 @@ permissions:
   contents: read
 
 jobs:
-  test-and-package-intel:
-    name: Test and package Intel app
-    runs-on: macos-15-intel
+  test-and-package:
+    name: Test and package ${{ matrix.label }} app
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Intel
+            runner: macos-15-intel
+            make_target: release-intel
+            asset_arch: x86_64
+            binary_arch: x86_64
+            artifact_name: CodexUsage-intel
+          - label: Apple Silicon
+            runner: macos-15
+            make_target: release-arm64
+            asset_arch: arm64
+            binary_arch: arm64
+            artifact_name: CodexUsage-apple-silicon
 
     steps:
       # Pinned to the verified actions/checkout v4.3.1 commit.
@@ -32,6 +48,7 @@ jobs:
           ./scripts/test-product-identity.sh
           ./scripts/test-macos-compatibility.sh
           ./scripts/test-ci-security.sh
+          ./scripts/test-source-security.sh
           git diff --check
 
       - name: Build and run self-tests
@@ -45,30 +62,35 @@ jobs:
           "$binary" --self-test-rate-limits
           "$binary" --self-test-task-progress
           "$binary" --self-test-quota-pace
+          "$binary" --self-test-quota-alerts
           "$binary" --self-test-particle-animation
           "$binary" --self-test-updates
           ./scripts/test-parsers.sh
 
-      - name: Package and verify Intel DMG
+      - name: Package and verify DMG
         shell: bash
+        env:
+          MAKE_TARGET: ${{ matrix.make_target }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+          BINARY_ARCH: ${{ matrix.binary_arch }}
         run: |
           set -euo pipefail
-          make release-intel SWIFT_OPTIMIZATION=-O
-          checksum="$(find dist -maxdepth 1 -name '*-mac-x86_64.dmg.sha256' -print -quit)"
+          make "$MAKE_TARGET" SWIFT_OPTIMIZATION=-O
+          checksum="$(find dist -maxdepth 1 -name "*-mac-${ASSET_ARCH}.dmg.sha256" -print -quit)"
           test -n "$checksum"
           shasum -a 256 -c "$checksum"
           dmg="${checksum%.sha256}"
           hdiutil verify "$dmg"
-          file build/CodexUsage.app/Contents/MacOS/CodexUsage | grep -q 'x86_64'
+          file build/CodexUsage.app/Contents/MacOS/CodexUsage | grep -q "$BINARY_ARCH"
           codesign --verify --deep --strict build/CodexUsage.app
 
       # Pinned to the verified actions/upload-artifact v4.6.2 commit.
-      - name: Upload Intel installer
+      - name: Upload installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: CodexUsage-intel
+          name: ${{ matrix.artifact_name }}
           path: |
-            dist/*-mac-x86_64.dmg
-            dist/*-mac-x86_64.dmg.sha256
+            dist/*-mac-${{ matrix.asset_arch }}.dmg
+            dist/*-mac-${{ matrix.asset_arch }}.dmg.sha256
           if-no-files-found: error
           retention-days: 7

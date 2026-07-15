@@ -2,7 +2,7 @@
 
 CodexUsage is a local-first macOS menu bar app. It shows remaining Codex 5-hour and weekly quota as rings, tracks today/7-day/lifetime tokens, and builds a daily task board from local Codex conversations and automations.
 
-> The current version is `0.1.0`. The first release is being verified on a clean GitHub macOS Intel runner. Until a Release is published, install only from source or from this repository's own CI artifact.
+> The current version is `0.1.0`. The first release will be verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
 
 ## Features
 
@@ -11,6 +11,7 @@ CodexUsage is a local-first macOS menu bar app. It shows remaining Codex 5-hour 
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
 - A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.
 - Quota pace guidance compares elapsed window time with used quota and labels it roomy, on pace, or fast; it does not predict an absolute token allowance.
+- Optional local alerts at 20%, 10%, and 5% remaining; off by default and emitted at most once per threshold per reset cycle.
 - Usage trends, project rankings, and tool/Skill statistics.
 - Optional local Claude Code statistics without affecting Codex-only use.
 - `Command + U` shows or hides the main window by default.
@@ -25,6 +26,8 @@ This repository does not fork upstream history. Source was imported through an e
 - The only runtime internet request is an optional GitHub Release metadata `GET`; automatic checks are off by default.
 - No silent update download, replacement, or execution.
 - CI uses only official GitHub Actions pinned to full commit SHAs, `contents: read`, and no repository secrets.
+- `test-source-security.sh` continuously rejects credential access, network writes, downloaders, remote shells, login persistence, third-party dependency manifests, and precompiled libraries.
+- Low-quota alerts are delivered by the local macOS notification center and contain only the window, remaining percentage, and reset time.
 - Every DMG is accompanied by a SHA-256 checksum.
 
 A static audit materially reduces risk but cannot mathematically prove that software is harmless forever. Release builds are still compiled on a clean runner, architecture/signature checked, mounted and inspected, and hashed again. See [SECURITY.md](SECURITY.md) for reporting and the exact local data scope.

@@ -35,7 +35,7 @@ else
 CODESIGN_FLAGS := --force --deep --options runtime --timestamp --sign "$(SIGN_IDENTITY)" $(CODESIGN_EXTRA_FLAGS)
 endif
 
-.PHONY: build run probe test-rate-limits test-statistics-time-zone test-task-progress test-quota-pace test-particle-animation test-macos-compatibility test-ci-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package verify clean clean-dist
+.PHONY: build run probe test-rate-limits test-statistics-time-zone test-task-progress test-quota-pace test-quota-alerts test-particle-animation test-macos-compatibility test-ci-security test-source-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package verify clean clean-dist
 
 build:
 	rm -rf "$(APP_DIR)"
@@ -48,7 +48,8 @@ build:
 		-o "$(MACOS_DIR)/$(APP_NAME)" \
 		-framework Cocoa \
 		-framework Carbon \
-		-framework SwiftUI
+		-framework SwiftUI \
+		-framework UserNotifications
 	codesign $(CODESIGN_FLAGS) "$(APP_DIR)"
 	codesign --verify --deep --strict "$(APP_DIR)"
 
@@ -70,11 +71,17 @@ test-task-progress:
 test-quota-pace:
 	./scripts/test-quota-pace.sh
 
+test-quota-alerts:
+	./scripts/test-quota-alerts.sh
+
 test-macos-compatibility:
 	./scripts/test-macos-compatibility.sh
 
 test-ci-security:
 	./scripts/test-ci-security.sh
+
+test-source-security:
+	./scripts/test-source-security.sh
 
 test-particle-animation:
 	./scripts/test-particle-animation.sh

@@ -116,3 +116,5 @@ Do not import:
 The independent repository adds its own `.github/workflows/ci.yml`; it is not copied from upstream. The workflow has `contents: read`, does not consume secrets, and uses only `actions/checkout` and `actions/upload-artifact` pinned to reviewed full commit SHAs. `scripts/test-ci-security.sh` enforces those properties.
 
 Automatic update checks now default to off, update metadata points to `Ustinian-J/CodexUsage`, and the Makefile no longer exposes the excluded upstream notarization or remote release-check targets. Current personal/test artifacts remain ad-hoc signed and explicitly not notarized.
+
+The local extension also adds opt-in macOS quota notifications. They are disabled by default, request permission only after being enabled, and persist only a window kind, reset timestamp, and emitted threshold numbers. Notification content excludes account, conversation, prompt, path, and credential data.

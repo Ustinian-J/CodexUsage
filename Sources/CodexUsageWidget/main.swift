@@ -2926,6 +2926,7 @@ final class AppSettings: ObservableObject {
     private static let keepRunningWhenMainWindowClosedKey = "CodexUsage.keepRunningWhenMainWindowClosed"
     private static let visibleRuntimeScopesKey = "CodexUsage.visibleRuntimeScopes"
     private static let automaticUpdateChecksEnabledKey = "CodexUsage.update.autoCheckEnabled"
+    private static let quotaAlertsEnabledKey = "CodexUsage.quotaAlerts.enabled"
     private static let skippedUpdateVersionKey = "CodexUsage.update.skippedVersion"
 
     private let defaults: UserDefaults
@@ -2967,6 +2968,12 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var quotaAlertsEnabled: Bool {
+        didSet {
+            defaults.set(quotaAlertsEnabled, forKey: Self.quotaAlertsEnabledKey)
+        }
+    }
+
     @Published private(set) var skippedUpdateVersion: String? {
         didSet {
             if let skippedUpdateVersion {
@@ -3004,6 +3011,11 @@ final class AppSettings: ObservableObject {
             automaticUpdateChecksEnabled = false
         } else {
             automaticUpdateChecksEnabled = defaults.bool(forKey: Self.automaticUpdateChecksEnabledKey)
+        }
+        if defaults.object(forKey: Self.quotaAlertsEnabledKey) == nil {
+            quotaAlertsEnabled = false
+        } else {
+            quotaAlertsEnabled = defaults.bool(forKey: Self.quotaAlertsEnabledKey)
         }
         skippedUpdateVersion = defaults.string(forKey: Self.skippedUpdateVersionKey)
         visibleRuntimeScopes = Self.storedVisibleRuntimeScopes(defaults: defaults)
@@ -3994,7 +4006,7 @@ struct SettingsPanelView: View {
 
                 settingsSection(
                     title: language.text("系统", "System"),
-                    detail: language.text("状态与更新", "Status")
+                    detail: language.text("状态、提醒与更新", "Status, alerts, and updates")
                 ) {
                     SettingsValueRow(
                         title: language.text("当前 Runtime", "Current runtime"),
@@ -4006,6 +4018,15 @@ struct SettingsPanelView: View {
                         detail: language.text("来自本机账户读取结果", "Read from the local account result"),
                         value: planLabel
                     )
+                    SettingsToggleRow(
+                        title: language.text("低额度本地提醒", "Low-quota local alerts"),
+                        detail: language.text(
+                            "剩余 20%、10%、5% 时提醒；每个重置周期各一次，默认关闭",
+                            "Alerts at 20%, 10%, and 5%, once per reset cycle; off by default"
+                        )
+                    ) {
+                        SettingsSwitchToggle(isOn: $settings.quotaAlertsEnabled)
+                    }
                     AppUpdateSettingsRows(
                         settings: settings,
                         updateStore: updateStore,
@@ -8801,12 +8822,12 @@ private func fourCharCode(_ value: String) -> OSType {
     }
 }
 
-private func debugLog(_ message: String) {
-    guard ProcessInfo.processInfo.environment["CODEX_USAGE_WIDGET_DEBUG"] == "1" else { return }
+func debugLog(_ message: String) {
+    guard ProcessInfo.processInfo.environment["CODEXUSAGE_DEBUG"] == "1" else { return }
 
     let formatter = ISO8601DateFormatter()
     let line = "\(formatter.string(from: Date())) \(message)\n"
-    let url = URL(fileURLWithPath: "/tmp/codexu.log")
+    let url = URL(fileURLWithPath: "/tmp/codexusage.log")
 
     guard let data = line.data(using: .utf8) else { return }
 
@@ -8904,6 +8925,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let store = UsageStore()
     private let settings = AppSettings()
     private lazy var updateStore = AppUpdateStore(settings: settings)
+    private let quotaAlertService = QuotaAlertService()
     private var window: MainAppWindow?
     private var settingsWindow: NSWindow?
     private var titlebarToolbarController: NSTitlebarAccessoryViewController?
@@ -9275,6 +9297,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.updateStatusItem()
+            }
+            .store(in: &cancellables)
+
+        settings.$quotaAlertsEnabled
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.quotaAlertService.updateAuthorization(enabled: enabled)
+            }
+            .store(in: &cancellables)
+
+        store.$multiRuntimeSnapshot
+            .receive(on: RunLoop.main)
+            .sink { [weak self] multiRuntimeSnapshot in
+                guard let self,
+                      let snapshot = multiRuntimeSnapshot.runtime(for: .codex)?.snapshot else { return }
+                self.quotaAlertService.evaluate(
+                    snapshot: snapshot,
+                    enabled: self.settings.quotaAlertsEnabled,
+                    language: self.settings.language
+                )
             }
             .store(in: &cancellables)
 
@@ -9669,6 +9712,10 @@ struct CodexUsageMain {
 
         if CommandLine.arguments.contains("--self-test-quota-pace") {
             exit(QuotaPaceSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-quota-alerts") {
+            exit(QuotaAlertPolicySelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--dump-json") {
