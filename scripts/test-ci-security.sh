@@ -35,4 +35,9 @@ if grep -Eq 'check-release-ready|notarize-dmg|APPLE_ID|NOTARY_PASSWORD' Makefile
   exit 1
 fi
 
+if grep -Fq 'rg ' scripts/test-product-identity.sh scripts/test-source-security.sh; then
+  echo "CI audit scripts must use macOS system tools only" >&2
+  exit 1
+fi
+
 echo "CI supply-chain checks passed"

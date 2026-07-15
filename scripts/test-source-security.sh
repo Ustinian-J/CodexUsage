@@ -9,6 +9,11 @@ fail() {
   exit 1
 }
 
+source_code_files=()
+while IFS= read -r file; do
+  source_code_files+=("$file")
+done < <(find Sources -type f ! -name '*.md' -print)
+
 for manifest in Package.swift Podfile Cartfile package.json package-lock.json yarn.lock pnpm-lock.yaml requirements.txt pyproject.toml; do
   [[ ! -e "$manifest" ]] || fail "third-party dependency manifest present: $manifest"
 done
@@ -20,19 +25,19 @@ if find Sources Resources -type f \( \
   fail "precompiled library present under Sources or Resources"
 fi
 
-if rg -n -i \
+if grep -nEi \
   'Keychain|SecItem|auth\.json|browser.*cookie|access[_-]?token|password|private[_-]?key' \
-  Sources --glob '!*.md'; then
+  "${source_code_files[@]}"; then
   fail "credential or secret access pattern found"
 fi
 
-if rg -n \
+if grep -nE \
   'httpMethod[[:space:]]*=[[:space:]]*"(POST|PUT|PATCH|DELETE)"|uploadTask\(|downloadTask\(' \
-  Sources --glob '!*.md'; then
+  "${source_code_files[@]}"; then
   fail "network write or background download pattern found"
 fi
 
-network_files="$(rg -l 'URLSession|https?://' Sources --glob '!*.md' || true)"
+network_files="$(grep -lE 'URLSession|https?://' "${source_code_files[@]}" || true)"
 while IFS= read -r file; do
   [[ -z "$file" ]] && continue
   case "$file" in
@@ -46,22 +51,29 @@ while IFS= read -r file; do
   esac
 done <<< "$network_files"
 
-if rg -n -i \
+reviewed_files=(Makefile)
+while IFS= read -r file; do
+  [[ "$file" == "scripts/test-source-security.sh" || "$file" == *.md ]] && continue
+  reviewed_files+=("$file")
+done < <(find Sources scripts -type f -print)
+
+if grep -nEi \
   '(^|[^[:alnum:]_])(curl|wget|nc|ssh|scp|osascript|launchctl)([^[:alnum:]_]|$)|SMAppService|eval[[:space:]]*\(' \
-  Sources scripts Makefile --glob '!test-source-security.sh' --glob '!*.md'; then
+  "${reviewed_files[@]}"; then
   fail "download, remote shell, scripting, or persistence pattern found"
 fi
 
-process_count="$(rg -n 'Process\(\)' Sources --glob '!*.md' | wc -l | tr -d ' ')"
+process_matches="$(grep -nF 'Process()' "${source_code_files[@]}" || true)"
+process_count="$(printf '%s\n' "$process_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
 [[ "$process_count" == "4" ]] || fail "Process launch surface changed: expected 4 reviewed sites, found $process_count"
 
-rg -Fq 'process.arguments = ["app-server"]' Sources/CodexUsageWidget/main.swift \
+grep -Fq 'process.arguments = ["app-server"]' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed Codex app-server launch changed"
-rg -Fq 'let grepPath = "/usr/bin/grep"' Sources/CodexUsageWidget/main.swift \
+grep -Fq 'let grepPath = "/usr/bin/grep"' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed grep launch changed"
-rg -Fq 'process.arguments = ["-readonly", "-json", dbPath, query]' Sources/CodexUsageWidget/main.swift \
+grep -Fq 'process.arguments = ["-readonly", "-json", dbPath, query]' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed read-only SQLite launch changed"
-rg -Fq 'helper.executableURL = executableURL' Sources/CodexUsageWidget/Domain/GlobalShortcutSelfTest.swift \
+grep -Fq 'helper.executableURL = executableURL' Sources/CodexUsageWidget/Domain/GlobalShortcutSelfTest.swift \
   || fail "reviewed self-test helper launch changed"
 
 echo "source security checks passed"
