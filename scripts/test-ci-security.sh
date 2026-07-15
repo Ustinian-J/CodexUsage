@@ -26,4 +26,9 @@ done < <(grep -E '^[[:space:]]+uses:' "$WORKFLOW")
 grep -Fqx '        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' "$WORKFLOW"
 grep -Fqx '        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' "$WORKFLOW"
 
+if grep -Eq 'check-release-ready|notarize-dmg|APPLE_ID|NOTARY_PASSWORD' Makefile; then
+  echo "Makefile references an excluded release or credential path" >&2
+  exit 1
+fi
+
 echo "CI supply-chain checks passed"

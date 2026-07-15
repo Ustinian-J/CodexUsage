@@ -35,7 +35,7 @@ else
 CODESIGN_FLAGS := --force --deep --options runtime --timestamp --sign "$(SIGN_IDENTITY)" $(CODESIGN_EXTRA_FLAGS)
 endif
 
-.PHONY: build run probe test-rate-limits test-statistics-time-zone test-particle-animation test-macos-compatibility test-ci-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package release-check notarize verify clean clean-dist
+.PHONY: build run probe test-rate-limits test-statistics-time-zone test-particle-animation test-macos-compatibility test-ci-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package verify clean clean-dist
 
 build:
 	rm -rf "$(APP_DIR)"
@@ -121,16 +121,6 @@ release-all: clean-dist
 
 release-package:
 	./scripts/build-release-artifacts.sh "$(VERSION)"
-
-release-check:
-	./scripts/check-release-ready.sh "$(VERSION)"
-
-notarize: dmg
-	APPLE_ID="$(APPLE_ID)" \
-	TEAM_ID="$(TEAM_ID)" \
-	NOTARY_PASSWORD="$(NOTARY_PASSWORD)" \
-	DMG_PATH="$(DMG_PATH)" \
-	./scripts/notarize-dmg.sh
 
 verify: build
 	file "$(MACOS_DIR)/$(APP_NAME)"

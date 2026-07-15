@@ -37,3 +37,14 @@ CodexUsage is local-first. The update checker may request public GitHub Release 
 Update requests must not include local usage, transcript, task, thread, account, path, prompt, response, tool argument, or tool output data. The update checker may send standard HTTPS headers such as `User-Agent` and `If-None-Match` for ETag caching.
 
 CodexUsage must not silently download, install, replace, or relaunch the app as part of the GitHub Release check. It may open the user's default browser to a matching DMG asset or the Release page.
+
+Automatic update checks are disabled by default. Enabling them is an explicit user setting.
+
+## Build Supply Chain
+
+- The repository has no third-party package manager dependency or vendored binary framework.
+- CI permissions are limited to `contents: read` and CI does not consume repository secrets.
+- CI may use only GitHub-owned actions pinned to full commit SHAs.
+- `scripts/test-ci-security.sh` enforces the current action allowlist and rejects floating tags.
+- Release artifacts include SHA-256 checksums and are verified for DMG integrity, Mach-O architecture, and code signature before installation.
+- Developer ID notarization automation is deliberately absent until it receives a separate credential and workflow review.
