@@ -67,6 +67,7 @@ enum StatusItemPresentationSelfTest {
 
         let defaultPreferences = StatusItemPreferencesStore.load(defaults: defaults)
         expect(defaultPreferences == .default, "missing keys should load the current rich defaults")
+        expect(defaultPreferences.quotaMode == .remaining, "menu bar must default to remaining quota")
         expect(QuotaDisplayMode.used.drawsClockwise, "used quota should draw clockwise")
         expect(!QuotaDisplayMode.remaining.drawsClockwise, "remaining quota should draw counterclockwise")
         expect(QuotaDisplayMode.used.startsAtLeadingEdge, "used linear bar should start at the leading edge")
@@ -77,7 +78,7 @@ enum StatusItemPresentationSelfTest {
         defaults.set([], forKey: StatusItemPreferencesStore.visibleMetricsKey)
         let repairedPreferences = StatusItemPreferencesStore.load(defaults: defaults)
         expect(repairedPreferences.displayMode == .rich, "unknown display mode should fall back to rich")
-        expect(repairedPreferences.quotaMode == .used, "unknown quota mode should fall back to used")
+        expect(repairedPreferences.quotaMode == .remaining, "unknown quota mode should fall back to remaining")
         expect(
             repairedPreferences.visibleMetrics == [.fiveHourQuota, .sevenDayQuota],
             "empty visible metrics should be repaired to both quota windows"
@@ -111,6 +112,7 @@ enum StatusItemPresentationSelfTest {
         let builder = StatusItemPresentationBuilder()
 
         var usedPreferences = StatusItemPreferences.default
+        usedPreferences.quotaMode = .used
         usedPreferences.visibleMetrics.insert(.todayTokens)
         let used = builder.build(
             source: source,
@@ -141,6 +143,23 @@ enum StatusItemPresentationSelfTest {
         )
         let remainingFiveHour = remaining.metrics.first { $0.metric == .fiveHourQuota }
         expect(remainingFiveHour?.value == "89%", "remaining mode should preserve remaining percentage")
+        expect(remainingFiveHour?.label == "5h剩", "Chinese rich label must say that the value is remaining")
+        let explicitLabelFont = NSFont.monospacedDigitSystemFont(ofSize: 8.2, weight: .semibold)
+        expect(
+            ((remainingFiveHour?.label ?? "") as NSString).size(withAttributes: [.font: explicitLabelFont]).width <= 33,
+            "Chinese explicit remaining label must fit its rich menu slot"
+        )
+        let englishRemaining = builder.build(
+            source: source,
+            preferences: remainingPreferences,
+            language: .en,
+            now: now
+        )
+        expect(
+            ((englishRemaining.quotaMetrics.first?.label ?? "") as NSString)
+                .size(withAttributes: [.font: explicitLabelFont]).width <= 33,
+            "English explicit remaining label must fit its rich menu slot"
+        )
         expect(remainingFiveHour?.fraction == 0.89, "remaining ring fraction should match its number")
         expect(remainingFiveHour?.paletteRole == .primary, "quota direction must not change palette identity")
         expect(remaining.tooltip.contains("剩余"), "Chinese tooltip should name the quota direction")
@@ -268,8 +287,13 @@ enum StatusItemPresentationSelfTest {
         let renderer = StatusItemRenderer()
         let minimalImage = renderer.render(minimal, appearance: NSAppearance(named: .aqua))
         if let bitmap = minimalImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2) {
-            expect(center.alphaComponent < 0.01, "minimal mode center should remain transparent without a runtime logo")
+           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2),
+           let edge = bitmap.colorAt(x: 1, y: bitmap.pixelsHigh / 2) {
+            expect(center.alphaComponent > 0.02, "minimal mode must have a visible capsule background")
+            expect(
+                edge.alphaComponent > center.alphaComponent + 0.08,
+                "minimal mode capsule border must be stronger than its background"
+            )
         } else {
             failures.append("minimal status item render should produce a readable bitmap")
         }
@@ -309,8 +333,13 @@ enum StatusItemPresentationSelfTest {
         expect(aquaImage.size == classic.imageSize, "Aqua render should preserve presentation size")
         expect(darkImage.size == classic.imageSize, "Dark Aqua render should preserve presentation size")
         if let bitmap = aquaImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-           let corner = bitmap.colorAt(x: 0, y: 0) {
-            expect(corner.alphaComponent < 0.01, "status item image background should remain transparent")
+           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2),
+           let edge = bitmap.colorAt(x: 1, y: bitmap.pixelsHigh / 2) {
+            expect(center.alphaComponent > 0.02, "status item must have a visible capsule background")
+            expect(
+                edge.alphaComponent > 0.08,
+                "status item capsule border must be visibly rendered"
+            )
         } else {
             failures.append("status item render should produce a readable bitmap")
         }
@@ -329,7 +358,7 @@ enum StatusItemPresentationSelfTest {
         expect(singleClassic.itemLength == 55, "classic single-quota item should use the compact 55pt width")
 
         let rich = builder.build(source: source, preferences: .default, language: .en, now: now)
-        expect(rich.itemLength <= 134, "default rich item should stay compact after adding reset semantics")
+        expect(rich.itemLength <= 152, "explicit remaining labels and boundary should stay within 152pt")
         expect(rich.quotaMetrics.count == 2, "rich mode should keep two rows when both quotas exist")
 
         let singleRich = builder.build(
@@ -341,11 +370,11 @@ enum StatusItemPresentationSelfTest {
         expect(singleRich.quotaMetrics.count == 1, "rich mode should use its single-quota layout")
         expect(singleRich.itemLength == rich.itemLength, "rich single-quota layout should keep a stable menu width")
         expect(
-            StatusItemLayoutMetrics.richSingleQuotaBarRect.width == 49
+            StatusItemLayoutMetrics.richSingleQuotaBarRect.width == 44
                 && StatusItemLayoutMetrics.richSingleQuotaBarRect.height == 13
                 && StatusItemLayoutMetrics.richSingleQuotaBarRect.midY
                     == StatusItemLayoutMetrics.imageHeight / 2,
-            "rich single-quota percentage bar should be a centered 49x13 capsule"
+            "rich single-quota percentage bar should be a centered 44x13 capsule"
         )
         expect(
             StatusItemLayoutMetrics.richSingleQuotaResetRect.midY
@@ -432,7 +461,7 @@ enum StatusItemPresentationSelfTest {
             var maxY = -1
             for y in 0..<bitmap.pixelsHigh {
                 for x in startX..<bitmap.pixelsWide
-                    where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.05 {
+                    where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.35 {
                     minX = min(minX, x)
                     maxX = max(maxX, x)
                     minY = min(minY, y)

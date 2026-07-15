@@ -72,6 +72,7 @@ struct StatusItemRenderer {
         }
 
         NSGraphicsContext.current?.imageInterpolation = .high
+        drawContainerBoundary(in: NSRect(origin: .zero, size: presentation.imageSize))
 
         switch presentation.mode {
         case .minimal:
@@ -209,6 +210,20 @@ struct StatusItemRenderer {
         )
     }
 
+    private func drawContainerBoundary(in bounds: NSRect) {
+        let rect = bounds.insetBy(dx: 0.75, dy: 1.25)
+        let path = NSBezierPath(
+            roundedRect: rect,
+            xRadius: 6,
+            yRadius: 6
+        )
+        NSColor.labelColor.withAlphaComponent(0.035).setFill()
+        path.fill()
+        NSColor.labelColor.withAlphaComponent(0.30).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
     private func drawRichSingleQuota(
         _ metric: StatusItemMetricPresentation,
         showsReset: Bool,
@@ -216,7 +231,7 @@ struct StatusItemRenderer {
     ) {
         drawText(
             metric.label,
-            in: NSRect(x: 22, y: 5.2, width: 17, height: 11),
+            in: NSRect(x: 22, y: 5.2, width: 33, height: 11),
             font: .monospacedDigitSystemFont(ofSize: 8.2, weight: .semibold),
             color: metric.isAvailable ? secondaryTextColor : mutedTextColor,
             alignment: .right
@@ -272,20 +287,20 @@ struct StatusItemRenderer {
     ) {
         drawText(
             metric.label,
-            in: NSRect(x: 22, y: y - 1, width: 17, height: 11),
+            in: NSRect(x: 22, y: y - 1, width: 33, height: 11),
             font: .monospacedDigitSystemFont(ofSize: 8.2, weight: .semibold),
             color: metric.isAvailable ? secondaryTextColor : mutedTextColor,
             alignment: .right
         )
         drawLinearProgress(
-            in: NSRect(x: 45, y: y + 2.2, width: 23, height: 4),
+            in: NSRect(x: 58, y: y + 2.2, width: 20, height: 4),
             fraction: metric.fraction,
             role: metric.paletteRole,
             quotaMode: quotaMode
         )
         drawText(
             metric.value,
-            in: NSRect(x: 70, y: y - 1, width: 24, height: 11),
+            in: NSRect(x: 80, y: y - 1, width: 24, height: 11),
             font: .monospacedDigitSystemFont(ofSize: 8.2, weight: .semibold),
             color: metric.isAvailable ? primaryTextColor : mutedTextColor,
             alignment: .right

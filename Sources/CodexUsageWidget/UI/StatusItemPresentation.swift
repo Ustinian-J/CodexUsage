@@ -102,12 +102,12 @@ enum StatusItemLayoutMetrics {
     static let leadingContentWidth: CGFloat = 22
     static let classicQuotaUnitWidth: CGFloat = 23
     static let classicTokenUnitWidth: CGFloat = 54
-    static let richQuotaWidthWithReset: CGFloat = 126
-    static let richQuotaWidthWithoutReset: CGFloat = 98
+    static let richQuotaWidthWithReset: CGFloat = 140
+    static let richQuotaWidthWithoutReset: CGFloat = 108
     static let richTokenOnlyWidth: CGFloat = 70
     static let richTokenExtensionWidth: CGFloat = 54
-    static let richSingleQuotaBarRect = NSRect(x: 45, y: 4.5, width: 49, height: 13)
-    static let richSingleQuotaResetRect = NSRect(x: 96, y: 4.5, width: 28, height: 13)
+    static let richSingleQuotaBarRect = NSRect(x: 58, y: 4.5, width: 44, height: 13)
+    static let richSingleQuotaResetRect = NSRect(x: 106, y: 4.5, width: 30, height: 13)
     static let richResetIconSide: CGFloat = 7
     static let richResetIconTextSpacing: CGFloat = 0.75
     static let richResetFontSize: CGFloat = 8.2
@@ -279,7 +279,7 @@ struct StatusItemPresentationBuilder {
         case .fiveHourQuota:
             return makeQuotaMetric(
                 metric: metric,
-                label: "5h",
+                label: explicitQuotaLabel(window: "5h", preferences: preferences, language: language),
                 remainingPercent: source.fiveHourRemainingPercent,
                 resetsAt: source.fiveHourResetsAt,
                 paletteRole: .primary,
@@ -289,7 +289,7 @@ struct StatusItemPresentationBuilder {
         case .sevenDayQuota:
             return makeQuotaMetric(
                 metric: metric,
-                label: "7d",
+                label: explicitQuotaLabel(window: "7d", preferences: preferences, language: language),
                 remainingPercent: source.sevenDayRemainingPercent,
                 resetsAt: source.sevenDayResetsAt,
                 paletteRole: .secondary,
@@ -309,6 +309,17 @@ struct StatusItemPresentationBuilder {
                 isAvailable: source.todayTokens != nil
             )
         }
+    }
+
+    private func explicitQuotaLabel(
+        window: String,
+        preferences: StatusItemPreferences,
+        language: WidgetLanguage
+    ) -> String {
+        if preferences.quotaMode == .remaining {
+            return language.text("\(window)剩", "\(window) left")
+        }
+        return language.text("\(window)用", "\(window) used")
     }
 
     private func makeQuotaMetric(

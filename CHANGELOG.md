@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-07-15
+
+- Changed the menu bar default from used quota to remaining quota.
+- Added explicit `5h剩` / `7d剩` labels in the rich Chinese menu bar layout, with equivalent English direction labels.
+- Added a subtle capsule background and stronger outline around every menu bar display mode so CodexUsage has a clear boundary from adjacent apps.
+
 ## 0.2.1 - 2026-07-15
 
 - Changed the menu bar popover to show exactly one selected runtime at a time, with an explicit Codex / Claude Code selector.

@@ -43,7 +43,7 @@ struct StatusItemPreferences: Equatable {
 
     static let `default` = StatusItemPreferences(
         displayMode: .rich,
-        quotaMode: .used,
+        quotaMode: .remaining,
         visibleMetrics: [.fiveHourQuota, .sevenDayQuota],
         showsResetCountdown: true
     )
