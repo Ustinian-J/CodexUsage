@@ -468,7 +468,7 @@ enum StatusItemPresentationSelfTest {
             var maxY = -1
             for y in 0..<bitmap.pixelsHigh {
                 for x in startX..<bitmap.pixelsWide
-                    where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.35 {
+                    where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.55 {
                     minX = min(minX, x)
                     maxX = max(maxX, x)
                     minY = min(minY, y)
