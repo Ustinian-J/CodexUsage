@@ -111,6 +111,25 @@ enum StatusItemPresentationSelfTest {
         )
         let builder = StatusItemPresentationBuilder()
 
+        let batteryDefault = builder.build(
+            source: source,
+            preferences: .default,
+            language: .zh,
+            now: now
+        )
+        expect(
+            batteryDefault.quotaMetrics.map(\.value) == ["89%", "76%"],
+            "default menu numbers must equal remaining quota percentages"
+        )
+        expect(
+            batteryDefault.quotaMetrics.map(\.fraction) == [0.89, 0.76],
+            "default progress fills must equal remaining quota fractions"
+        )
+        expect(
+            batteryDefault.quotaMetrics.map(\.label) == ["5h", "7d"],
+            "battery semantics must keep compact labels without extra wording"
+        )
+
         var usedPreferences = StatusItemPreferences.default
         usedPreferences.quotaMode = .used
         usedPreferences.visibleMetrics.insert(.todayTokens)
@@ -143,23 +162,7 @@ enum StatusItemPresentationSelfTest {
         )
         let remainingFiveHour = remaining.metrics.first { $0.metric == .fiveHourQuota }
         expect(remainingFiveHour?.value == "89%", "remaining mode should preserve remaining percentage")
-        expect(remainingFiveHour?.label == "5h剩", "Chinese rich label must say that the value is remaining")
-        let explicitLabelFont = NSFont.monospacedDigitSystemFont(ofSize: 8.2, weight: .semibold)
-        expect(
-            ((remainingFiveHour?.label ?? "") as NSString).size(withAttributes: [.font: explicitLabelFont]).width <= 33,
-            "Chinese explicit remaining label must fit its rich menu slot"
-        )
-        let englishRemaining = builder.build(
-            source: source,
-            preferences: remainingPreferences,
-            language: .en,
-            now: now
-        )
-        expect(
-            ((englishRemaining.quotaMetrics.first?.label ?? "") as NSString)
-                .size(withAttributes: [.font: explicitLabelFont]).width <= 33,
-            "English explicit remaining label must fit its rich menu slot"
-        )
+        expect(remainingFiveHour?.label == "5h", "remaining semantics must not add label text")
         expect(remainingFiveHour?.fraction == 0.89, "remaining ring fraction should match its number")
         expect(remainingFiveHour?.paletteRole == .primary, "quota direction must not change palette identity")
         expect(remaining.tooltip.contains("剩余"), "Chinese tooltip should name the quota direction")
@@ -358,7 +361,7 @@ enum StatusItemPresentationSelfTest {
         expect(singleClassic.itemLength == 55, "classic single-quota item should use the compact 55pt width")
 
         let rich = builder.build(source: source, preferences: .default, language: .en, now: now)
-        expect(rich.itemLength <= 152, "explicit remaining labels and boundary should stay within 152pt")
+        expect(rich.itemLength <= 134, "remaining percentages and boundary should stay compact")
         expect(rich.quotaMetrics.count == 2, "rich mode should keep two rows when both quotas exist")
 
         let singleRich = builder.build(
@@ -370,11 +373,11 @@ enum StatusItemPresentationSelfTest {
         expect(singleRich.quotaMetrics.count == 1, "rich mode should use its single-quota layout")
         expect(singleRich.itemLength == rich.itemLength, "rich single-quota layout should keep a stable menu width")
         expect(
-            StatusItemLayoutMetrics.richSingleQuotaBarRect.width == 44
+            StatusItemLayoutMetrics.richSingleQuotaBarRect.width == 49
                 && StatusItemLayoutMetrics.richSingleQuotaBarRect.height == 13
                 && StatusItemLayoutMetrics.richSingleQuotaBarRect.midY
                     == StatusItemLayoutMetrics.imageHeight / 2,
-            "rich single-quota percentage bar should be a centered 44x13 capsule"
+            "rich single-quota percentage bar should be a centered 49x13 capsule"
         )
         expect(
             StatusItemLayoutMetrics.richSingleQuotaResetRect.midY

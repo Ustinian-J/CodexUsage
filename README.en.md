@@ -16,7 +16,7 @@ CodexUsage is a local-first macOS menu bar app. It shows remaining Codex 5-hour 
 - An account-cycle dashboard for 5-hour and 7-day reset times, plan type, reset-credit details, and subscription expiry countdown.
 - Opt-in local subscription-expiry tracking because the current official `account/read` schema does not expose that date; it is never uploaded.
 - The menu bar popover switches directly between Codex and Claude Code and renders only one runtime at a time; Codex reset and account details never appear in the Claude Code view.
-- The menu bar defaults to explicit remaining-quota labels and percentages, with a capsule background and outline separating CodexUsage from adjacent status items.
+- Menu bar percentages and progress fills represent remaining quota by default, like a battery indicator; a capsule background and outline separate CodexUsage from adjacent status items.
 - Subscription expiry is completely omitted until explicitly configured on the local Mac; the app neither queries the web nor infers a date.
 - Usage trends, project rankings, and tool/Skill statistics.
 - Optional local Claude Code statistics without affecting Codex-only use.
