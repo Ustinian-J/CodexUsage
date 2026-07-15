@@ -3310,6 +3310,13 @@ struct UsageWidgetView: View {
                     language: language
                 )
                 .frame(width: 154, height: 26)
+
+                QuotaPaceSummary(
+                    fiveHourQuota: selectedQuotaIsStale ? nil : snapshot.fiveHourQuota,
+                    sevenDayQuota: selectedQuotaIsStale ? nil : snapshot.sevenDayQuota,
+                    language: language
+                )
+                .frame(width: 154, height: 18)
             }
 
             VStack(alignment: .leading, spacing: 13) {
@@ -3392,10 +3399,43 @@ struct UsageWidgetView: View {
     }
 
     private var taskBoardContent: some View {
-        HStack(alignment: .top, spacing: 8) {
-            ForEach(taskBoardColumns) { column in
-                TaskBoardColumnView(column: column, language: language)
-                    .frame(maxWidth: .infinity, alignment: .top)
+        VStack(alignment: .leading, spacing: 10) {
+            if let progress = taskProgress, let percent = progress.percent {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(language.text("今日对话任务进度", "Today's conversation progress"))
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(language.text(
+                            "\(progress.completedCount) / \(progress.trackedCount) 完成",
+                            "\(progress.completedCount) / \(progress.trackedCount) completed"
+                        ))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        Text("\(percent)%")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(WidgetPalette.statusSuccess)
+                    }
+
+                    ProgressView(value: Double(percent), total: 100)
+                        .progressViewStyle(.linear)
+                        .tint(WidgetPalette.statusSuccess)
+                        .accessibilityLabel(language.text("今日对话任务进度", "Today's conversation progress"))
+                        .accessibilityValue("\(percent)%")
+                }
+                .padding(.horizontal, 4)
+                .help(language.text(
+                    "根据今日本机 Codex 对话的活跃、待处理和归档状态估算；定时任务不计入。",
+                    "Estimated from today's active, pending, and archived local Codex conversations; automations are excluded."
+                ))
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                ForEach(taskBoardColumns) { column in
+                    TaskBoardColumnView(column: column, language: language)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                }
             }
         }
     }
@@ -3449,6 +3489,10 @@ struct UsageWidgetView: View {
             TaskColumn(id: .scheduled, title: localizedTaskColumnTitle(.scheduled, language: language), count: 0, items: []),
             TaskColumn(id: .done, title: localizedTaskColumnTitle(.done, language: language), count: 0, items: [])
         ]
+    }
+
+    private var taskProgress: TaskProgress? {
+        snapshot.taskBoard.map { TaskProgress(board: $0) }
     }
 
     private var shouldShowEnvironmentChecklist: Bool {
@@ -5997,6 +6041,61 @@ struct QuotaResetLine: View {
     private var resetText: String {
         guard let resetsAt = window.resetsAt else { return "--" }
         return resetDateTime(resetsAt, language: language)
+    }
+}
+
+private struct QuotaPaceSummary: View {
+    let fiveHourQuota: RateWindow?
+    let sevenDayQuota: RateWindow?
+    let language: WidgetLanguage
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let badge = badge(title: "5h", window: fiveHourQuota) {
+                badge
+            }
+            if let badge = badge(title: "7d", window: sevenDayQuota) {
+                badge
+            }
+        }
+    }
+
+    private func badge(title: String, window: RateWindow?) -> AnyView? {
+        let pace = QuotaPace.calculate(window: window, now: Date())
+        guard pace.status != .unavailable else { return nil }
+
+        let label: String
+        let color: Color
+        switch pace.status {
+        case .comfortable:
+            label = language.text("宽裕", "roomy")
+            color = WidgetPalette.statusSuccess
+        case .onPace:
+            label = language.text("正常", "on pace")
+            color = WidgetPalette.statusInfo
+        case .fast:
+            label = language.text("偏快", "fast")
+            color = WidgetPalette.statusWarning
+        case .unavailable:
+            return nil
+        }
+
+        return AnyView(
+            HStack(spacing: 3) {
+                Text(title)
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                Text(label)
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Capsule(style: .continuous).fill(color.opacity(0.12)))
+            .help(language.text(
+                "比较窗口已过时间与已用额度，仅作节奏参考。",
+                "Compares elapsed window time with used quota as pacing guidance only."
+            ))
+        )
     }
 }
 
@@ -9562,6 +9661,14 @@ struct CodexUsageMain {
 
         if CommandLine.arguments.contains("--self-test-statistics-time-zone") {
             exit(StatisticsTimeZoneSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-task-progress") {
+            exit(TaskProgressSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-quota-pace") {
+            exit(QuotaPaceSelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--dump-json") {

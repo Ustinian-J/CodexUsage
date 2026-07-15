@@ -9,7 +9,8 @@ CodexUsage is a local-first macOS menu bar app. It shows remaining Codex 5-hour 
 - Live 5-hour and 7-day quota rings with the remaining percentage in each ring.
 - Reset countdowns, used/remaining display modes, and multiple menu bar densities.
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
-- A daily task board derived from local Codex threads and enabled automations.
+- A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.
+- Quota pace guidance compares elapsed window time with used quota and labels it roomy, on pace, or fast; it does not predict an absolute token allowance.
 - Usage trends, project rankings, and tool/Skill statistics.
 - Optional local Claude Code statistics without affecting Codex-only use.
 - `Command + U` shows or hides the main window by default.

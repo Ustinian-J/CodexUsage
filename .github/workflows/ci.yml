@@ -43,6 +43,8 @@ jobs:
           "$binary" --self-test-statistics-time-zone
           "$binary" --self-test-status-item
           "$binary" --self-test-rate-limits
+          "$binary" --self-test-task-progress
+          "$binary" --self-test-quota-pace
           "$binary" --self-test-particle-animation
           "$binary" --self-test-updates
           ./scripts/test-parsers.sh

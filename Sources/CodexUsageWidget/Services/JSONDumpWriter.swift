@@ -151,9 +151,16 @@ private func runtimeJSONObject(_ local: LocalUsage) -> [String: Any] {
 }
 
 private func runtimeJSONObject(_ taskBoard: TaskBoard) -> [String: Any] {
-    [
+    let progress = TaskProgress(board: taskBoard)
+    return [
         "refreshedAt": runtimeISOString(taskBoard.refreshedAt) ?? "",
         "totalCount": taskBoard.totalCount,
+        "progress": [
+            "trackedCount": progress.trackedCount,
+            "completedCount": progress.completedCount,
+            "percent": runtimeJSONValue(progress.percent),
+            "basis": "today-local-conversation-status"
+        ] as [String: Any],
         "columns": taskBoard.columns.map { column in
             [
                 "id": column.id.rawValue,

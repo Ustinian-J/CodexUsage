@@ -110,3 +110,9 @@ Do not import:
 4. Run the app's JSON probe and inspect keys and values for secrets or conversation content.
 5. Verify the final app signature, Mach-O architecture, DMG contents, and checksum before installation.
 6. Review every local diff from the audited baseline before pushing to GitHub.
+
+## Local hardening addendum
+
+The independent repository adds its own `.github/workflows/ci.yml`; it is not copied from upstream. The workflow has `contents: read`, does not consume secrets, and uses only `actions/checkout` and `actions/upload-artifact` pinned to reviewed full commit SHAs. `scripts/test-ci-security.sh` enforces those properties.
+
+Automatic update checks now default to off, update metadata points to `Ustinian-J/CodexUsage`, and the Makefile no longer exposes the excluded upstream notarization or remote release-check targets. Current personal/test artifacts remain ad-hoc signed and explicitly not notarized.
