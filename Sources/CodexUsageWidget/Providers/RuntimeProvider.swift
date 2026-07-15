@@ -11,12 +11,12 @@ struct RuntimeLoadContext {
         statisticsPreference: StatisticsTimeZonePreference = .default
     ) -> RuntimeLoadContext {
         let environment = ProcessInfo.processInfo.environment
-        let home = environment["CODEXU_HOME_OVERRIDE"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let home = environment["CODEXUSAGE_HOME_OVERRIDE"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.homeDirectoryForCurrentUser
-        let cache = environment["CODEXU_CACHE_OVERRIDE"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let cache = environment["CODEXUSAGE_CACHE_OVERRIDE"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("codexU", isDirectory: true)
-            ?? home.appendingPathComponent("Library/Caches/codexU", isDirectory: true)
+            .appendingPathComponent("CodexUsage", isDirectory: true)
+            ?? home.appendingPathComponent("Library/Caches/CodexUsage", isDirectory: true)
         return RuntimeLoadContext(
             now: now,
             homeDirectory: home,
@@ -40,7 +40,7 @@ struct RuntimeProviderRegistry {
             CodexRuntimeProvider(),
             ClaudeCodeRuntimeProvider()
         ]
-        let filters = ProcessInfo.processInfo.environment["CODEXU_RUNTIME_FILTER"]?
+        let filters = ProcessInfo.processInfo.environment["CODEXUSAGE_RUNTIME_FILTER"]?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             ?? []

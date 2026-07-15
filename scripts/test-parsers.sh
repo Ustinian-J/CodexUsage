@@ -33,10 +33,10 @@ cat > "$CACHE_DIR/claude-code/statusline-snapshot.json" <<'JSON'
 JSON
 
 OUTPUT="$TMP_DIR/out.json"
-CODEXU_HOME_OVERRIDE="$TMP_DIR" \
-CODEXU_CACHE_OVERRIDE="$CACHE_DIR" \
-CODEXU_RUNTIME_FILTER="claude-code" \
-  build/codexU.app/Contents/MacOS/codexU --dump-json > "$OUTPUT"
+CODEXUSAGE_HOME_OVERRIDE="$TMP_DIR" \
+CODEXUSAGE_CACHE_OVERRIDE="$CACHE_DIR" \
+CODEXUSAGE_RUNTIME_FILTER="claude-code" \
+  build/CodexUsage.app/Contents/MacOS/CodexUsage --dump-json > "$OUTPUT"
 
 grep -q '"schemaVersion" : 2' "$OUTPUT"
 grep -q '"id" : "claude-code"' "$OUTPUT"
@@ -71,10 +71,10 @@ PATH=/usr/bin:/bin /usr/bin/ruby -rjson -rtime -e '
 
 chmod 000 "$PROJECT_DIR/session.jsonl"
 MIGRATED_OUTPUT="$TMP_DIR/out-migrated.json"
-CODEXU_HOME_OVERRIDE="$TMP_DIR" \
-CODEXU_CACHE_OVERRIDE="$CACHE_DIR" \
-CODEXU_RUNTIME_FILTER="claude-code" \
-  build/codexU.app/Contents/MacOS/codexU --dump-json > "$MIGRATED_OUTPUT"
+CODEXUSAGE_HOME_OVERRIDE="$TMP_DIR" \
+CODEXUSAGE_CACHE_OVERRIDE="$CACHE_DIR" \
+CODEXUSAGE_RUNTIME_FILTER="claude-code" \
+  build/CodexUsage.app/Contents/MacOS/CodexUsage --dump-json > "$MIGRATED_OUTPUT"
 
 grep -q '"visibleTotalTokens" : 1900' "$MIGRATED_OUTPUT"
 grep -q '"version":2' "$CACHE_FILE"
@@ -83,10 +83,10 @@ grep -q '"version":2' "$CACHE_FILE"
 FIRST_CACHE_MTIME="$(stat -f %m "$CACHE_FILE")"
 sleep 1
 WARM_OUTPUT="$TMP_DIR/out-warm.json"
-CODEXU_HOME_OVERRIDE="$TMP_DIR" \
-CODEXU_CACHE_OVERRIDE="$CACHE_DIR" \
-CODEXU_RUNTIME_FILTER="claude-code" \
-  build/codexU.app/Contents/MacOS/codexU --dump-json > "$WARM_OUTPUT"
+CODEXUSAGE_HOME_OVERRIDE="$TMP_DIR" \
+CODEXUSAGE_CACHE_OVERRIDE="$CACHE_DIR" \
+CODEXUSAGE_RUNTIME_FILTER="claude-code" \
+  build/CodexUsage.app/Contents/MacOS/CodexUsage --dump-json > "$WARM_OUTPUT"
 
 grep -q '"visibleTotalTokens" : 1900' "$WARM_OUTPUT"
 test "$FIRST_CACHE_MTIME" = "$(stat -f %m "$CACHE_FILE")"

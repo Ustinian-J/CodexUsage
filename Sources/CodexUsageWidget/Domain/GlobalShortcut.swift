@@ -9,10 +9,10 @@ struct GlobalShortcut: Hashable {
         keyLabel: "U"
     )
 
-    static let keyCodeStorageKey = "codexU.globalShortcut.keyCode"
-    static let modifiersStorageKey = "codexU.globalShortcut.modifiers"
-    static let keyLabelStorageKey = "codexU.globalShortcut.keyLabel"
-    static let enabledStorageKey = "codexU.globalShortcut.enabled"
+    static let keyCodeStorageKey = "CodexUsage.globalShortcut.keyCode"
+    static let modifiersStorageKey = "CodexUsage.globalShortcut.modifiers"
+    static let keyLabelStorageKey = "CodexUsage.globalShortcut.keyLabel"
+    static let enabledStorageKey = "CodexUsage.globalShortcut.enabled"
 
     let keyCode: UInt32
     let carbonModifiers: UInt32

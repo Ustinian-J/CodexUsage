@@ -287,7 +287,7 @@ struct UsageSnapshot: Equatable {
         cloudLifetimeTokens: nil,
         local: nil,
         taskBoard: nil,
-        messages: ["正在读取 codexU 数据"]
+        messages: ["正在读取 CodexUsage 数据"]
     )
 
     func replacingTaskBoard(_ taskBoard: TaskBoard?) -> UsageSnapshot {
@@ -1113,8 +1113,8 @@ final class CodexUsageReader {
             "method": "initialize",
             "params": [
                 "clientInfo": [
-                    "name": "codexu",
-                    "title": "codexU",
+                    "name": "codexusage",
+                    "title": "CodexUsage",
                     "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.1"
                 ],
                 "capabilities": [
@@ -2368,7 +2368,7 @@ final class CodexUsageReader {
             return nil
         }
         return caches
-            .appendingPathComponent("codexU", isDirectory: true)
+            .appendingPathComponent("CodexUsage", isDirectory: true)
             .appendingPathComponent("local-analytics-v2.json")
     }
 
@@ -2377,7 +2377,7 @@ final class CodexUsageReader {
             return nil
         }
         return caches
-            .appendingPathComponent("codexU", isDirectory: true)
+            .appendingPathComponent("CodexUsage", isDirectory: true)
             .appendingPathComponent("session-usage-v1.json")
     }
 
@@ -2828,7 +2828,7 @@ enum WidgetLanguage: String, CaseIterable, Equatable {
     case zh
     case en
 
-    static let storageKey = "codexU.interfaceLanguage"
+    static let storageKey = "CodexUsage.interfaceLanguage"
 
     static var automatic: WidgetLanguage {
         let identifier = TimeZone.current.identifier
@@ -2867,7 +2867,7 @@ enum WidgetThemeMode: String, CaseIterable, Equatable {
     case light
     case dark
 
-    static let storageKey = "codexU.interfaceThemeMode"
+    static let storageKey = "CodexUsage.interfaceThemeMode"
 
     static func storedOrAutomatic(defaults: UserDefaults = .standard) -> WidgetThemeMode {
         guard let rawValue = defaults.string(forKey: storageKey),
@@ -2907,7 +2907,7 @@ enum ParticleAnimationMode: String, CaseIterable, Equatable {
     case standard = "default"
     case powerSaving = "powerSaving"
 
-    static let storageKey = "codexU.particleAnimationMode"
+    static let storageKey = "CodexUsage.particleAnimationMode"
 
     static func storedOrDefault(defaults: UserDefaults = .standard) -> ParticleAnimationMode {
         guard let rawValue = defaults.string(forKey: storageKey),
@@ -2922,11 +2922,11 @@ enum ParticleAnimationMode: String, CaseIterable, Equatable {
 }
 
 final class AppSettings: ObservableObject {
-    private static let keepMainWindowOnTopKey = "codexU.keepMainWindowOnTop"
-    private static let keepRunningWhenMainWindowClosedKey = "codexU.keepRunningWhenMainWindowClosed"
-    private static let visibleRuntimeScopesKey = "codexU.visibleRuntimeScopes"
-    private static let automaticUpdateChecksEnabledKey = "codexU.update.autoCheckEnabled"
-    private static let skippedUpdateVersionKey = "codexU.update.skippedVersion"
+    private static let keepMainWindowOnTopKey = "CodexUsage.keepMainWindowOnTop"
+    private static let keepRunningWhenMainWindowClosedKey = "CodexUsage.keepRunningWhenMainWindowClosed"
+    private static let visibleRuntimeScopesKey = "CodexUsage.visibleRuntimeScopes"
+    private static let automaticUpdateChecksEnabledKey = "CodexUsage.update.autoCheckEnabled"
+    private static let skippedUpdateVersionKey = "CodexUsage.update.skippedVersion"
 
     private let defaults: UserDefaults
 
@@ -3001,7 +3001,7 @@ final class AppSettings: ObservableObject {
             keepRunningWhenMainWindowClosed = defaults.bool(forKey: Self.keepRunningWhenMainWindowClosedKey)
         }
         if defaults.object(forKey: Self.automaticUpdateChecksEnabledKey) == nil {
-            automaticUpdateChecksEnabled = true
+            automaticUpdateChecksEnabled = false
         } else {
             automaticUpdateChecksEnabled = defaults.bool(forKey: Self.automaticUpdateChecksEnabledKey)
         }
@@ -3452,7 +3452,7 @@ struct UsageWidgetView: View {
     }
 
     private var shouldShowEnvironmentChecklist: Bool {
-        if snapshot.messages.contains("正在读取 codexU 数据") { return false }
+        if snapshot.messages.contains("正在读取 CodexUsage 数据") { return false }
         let quotaUnavailable = snapshot.fiveHourQuota == nil && snapshot.sevenDayQuota == nil
         let hasQuotaProtocolWarning = snapshot.messages.contains { $0.contains("额度窗口") }
         return (!snapshot.messages.isEmpty && (quotaUnavailable || hasQuotaProtocolWarning || snapshot.local == nil))
@@ -4027,7 +4027,7 @@ struct SettingsPanelView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(language.text("设置", "Settings"))
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
-                Text("codexU")
+                Text("CodexUsage")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -5834,7 +5834,7 @@ private enum QuotaParticleAnimationSelfTest {
         )
         host.prepareForRemoval()
 
-        let suiteName = "codexU.particle-animation-self-test.\(UUID().uuidString)"
+        let suiteName = "CodexUsage.particle-animation-self-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             print("particle animation self-test failed: could not create UserDefaults suite")
             return false
@@ -8443,7 +8443,7 @@ private func localizedTaskDetail(_ detail: String, language: WidgetLanguage) -> 
 
 private func localizedReaderMessage(_ message: String, language: WidgetLanguage) -> String {
     guard !language.isChinese else { return message }
-    if message == "正在读取 codexU 数据" { return "Reading codexU data" }
+    if message == "正在读取 CodexUsage 数据" { return "Reading CodexUsage data" }
     if message.contains("未找到 codex") { return "Codex executable not found" }
     if message.contains("app-server 启动失败") { return "Failed to start app-server" }
     if message.contains("app-server 响应超时") { return "app-server response timed out" }
@@ -8743,7 +8743,7 @@ final class GlassHostingContainer<Content: View>: NSView {
         host.frame = bounds
         host.autoresizingMask = [.width, .height]
 
-#if compiler(>=6.2) && CODEXU_HAS_LIQUID_GLASS
+#if compiler(>=6.2) && CODEXUSAGE_HAS_LIQUID_GLASS
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: bounds)
             glass.autoresizingMask = [.width, .height]
@@ -8788,7 +8788,7 @@ final class MainAppWindow: NSWindow {
             backing: .buffered,
             defer: false
         )
-        title = "codexU"
+        title = "CodexUsage"
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
         isReleasedWhenClosed = false
@@ -9031,10 +9031,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
 
-        let appMenu = NSMenu(title: "codexU")
+        let appMenu = NSMenu(title: "CodexUsage")
         appMenuItem.submenu = appMenu
         appMenu.addItem(NSMenuItem(
-            title: language.text("关于 codexU", "About codexU"),
+            title: language.text("关于 CodexUsage", "About CodexUsage"),
             action: #selector(showAboutPanel),
             keyEquivalent: ""
         ))
@@ -9047,7 +9047,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(.separator())
 
         let hideItem = NSMenuItem(
-            title: language.text("隐藏 codexU", "Hide codexU"),
+            title: language.text("隐藏 CodexUsage", "Hide CodexUsage"),
             action: #selector(NSApplication.hide(_:)),
             keyEquivalent: "h"
         )
@@ -9072,7 +9072,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(showAllItem)
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(
-            title: language.text("退出 codexU", "Quit codexU"),
+            title: language.text("退出 CodexUsage", "Quit CodexUsage"),
             action: #selector(quitFromMenu),
             keyEquivalent: "q"
         ))
@@ -9383,7 +9383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             appearance: appearance
         )
         button.toolTip = presentation.tooltip
-        button.setAccessibilityLabel("codexU")
+        button.setAccessibilityLabel("CodexUsage")
         button.setAccessibilityValue(presentation.accessibilityValue)
     }
 
@@ -9531,7 +9531,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 }
 
 @main
-struct codexUMain {
+struct CodexUsageMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test-global-shortcut") {
             exit(GlobalShortcutSelfTest.run() ? 0 : 1)

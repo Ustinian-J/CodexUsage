@@ -189,7 +189,7 @@ private struct StatusItemPreviewRow: View {
                     )
             }
             .frame(width: statusItemSettingsAccessoryWidth, height: 38)
-            .accessibilityLabel("codexU")
+            .accessibilityLabel("CodexUsage")
             .accessibilityValue(presentation.accessibilityValue)
         }
     }

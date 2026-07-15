@@ -79,10 +79,10 @@ struct StatusItemPreferences: Equatable {
 }
 
 enum StatusItemPreferencesStore {
-    static let displayModeKey = "codexU.statusItem.displayMode"
-    static let quotaModeKey = "codexU.statusItem.quotaMode"
-    static let visibleMetricsKey = "codexU.statusItem.visibleMetrics"
-    static let showsResetCountdownKey = "codexU.statusItem.showsResetCountdown"
+    static let displayModeKey = "CodexUsage.statusItem.displayMode"
+    static let quotaModeKey = "CodexUsage.statusItem.quotaMode"
+    static let visibleMetricsKey = "CodexUsage.statusItem.visibleMetrics"
+    static let showsResetCountdownKey = "CodexUsage.statusItem.showsResetCountdown"
 
     static func load(defaults: UserDefaults = .standard) -> StatusItemPreferences {
         let fallback = StatusItemPreferences.default

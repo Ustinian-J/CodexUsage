@@ -35,8 +35,8 @@ struct StatisticsTimeZonePreference: Equatable, Codable {
 }
 
 enum StatisticsTimeZonePreferenceStore {
-    private static let selectionKey = "codexU.statisticsTimeZone.selection"
-    private static let fixedIdentifierKey = "codexU.statisticsTimeZone.fixedIdentifier"
+    private static let selectionKey = "CodexUsage.statisticsTimeZone.selection"
+    private static let fixedIdentifierKey = "CodexUsage.statisticsTimeZone.fixedIdentifier"
 
     static func load(defaults: UserDefaults = .standard, system: TimeZone = .current) -> StatisticsTimeZonePreference {
         let selection = defaults.string(forKey: selectionKey)
@@ -143,7 +143,7 @@ enum StatisticsTimeZoneSelfTest {
         let fallNext = losAngeles.calendar.date(byAdding: .day, value: 1, to: losAngeles.startOfDay(for: fall))!
         expect(Int(fallNext.timeIntervalSince(losAngeles.startOfDay(for: fall))) == 25 * 3600, "DST fall day")
 
-        let suite = "codexU.statistics-time-zone.\(UUID().uuidString)"
+        let suite = "CodexUsage.statistics-time-zone.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         StatisticsTimeZonePreferenceStore.save(
@@ -151,8 +151,8 @@ enum StatisticsTimeZoneSelfTest {
             defaults: defaults
         )
         expect(StatisticsTimeZonePreferenceStore.load(defaults: defaults).fixedIdentifier == "Asia/Shanghai", "preference persistence")
-        defaults.set("fixed", forKey: "codexU.statisticsTimeZone.selection")
-        defaults.set("Invalid/Zone", forKey: "codexU.statisticsTimeZone.fixedIdentifier")
+        defaults.set("fixed", forKey: "CodexUsage.statisticsTimeZone.selection")
+        defaults.set("Invalid/Zone", forKey: "CodexUsage.statisticsTimeZone.fixedIdentifier")
         expect(StatisticsTimeZonePreferenceStore.load(defaults: defaults).selection == .system, "invalid zone repair")
         expect(
             preferredRuntimeTodayTokens(detailed: 490_100_000, fallback: 650_900_000) == 490_100_000,

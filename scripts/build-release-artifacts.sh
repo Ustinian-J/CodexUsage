@@ -17,11 +17,11 @@ git diff --check
 
 make test-macos-compatibility
 make build >/dev/null
-build/codexU.app/Contents/MacOS/codexU --self-test-statistics-time-zone
-build/codexU.app/Contents/MacOS/codexU --self-test-status-item
-build/codexU.app/Contents/MacOS/codexU --self-test-rate-limits
-build/codexU.app/Contents/MacOS/codexU --self-test-particle-animation
-build/codexU.app/Contents/MacOS/codexU --self-test-updates
+build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-statistics-time-zone
+build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-status-item
+build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-rate-limits
+build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-particle-animation
+build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-updates
 ./scripts/test-parsers.sh
 
 make release-all
@@ -29,7 +29,7 @@ make release-all
 verify_asset() {
   local arch="$1"
   local expected_arch="$2"
-  local dmg="dist/codexU-${VERSION}-mac-${arch}.dmg"
+  local dmg="dist/CodexUsage-${VERSION}-mac-${arch}.dmg"
   local checksum="${dmg}.sha256"
   local mount_dir
 
@@ -40,8 +40,8 @@ verify_asset() {
 
   mount_dir="$(mktemp -d)"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg" >/dev/null
-  file "$mount_dir/codexU.app/Contents/MacOS/codexU" | grep -q "$expected_arch"
-  codesign --verify --deep --strict "$mount_dir/codexU.app"
+  file "$mount_dir/CodexUsage.app/Contents/MacOS/CodexUsage" | grep -q "$expected_arch"
+  codesign --verify --deep --strict "$mount_dir/CodexUsage.app"
   hdiutil detach "$mount_dir" >/dev/null
   rmdir "$mount_dir"
 }
@@ -49,6 +49,6 @@ verify_asset() {
 verify_asset arm64 arm64
 verify_asset x86_64 x86_64
 
-echo "Release artifacts verified for codexU $VERSION"
-cat "dist/codexU-${VERSION}-mac-arm64.dmg.sha256"
-cat "dist/codexU-${VERSION}-mac-x86_64.dmg.sha256"
+echo "Release artifacts verified for CodexUsage $VERSION"
+cat "dist/CodexUsage-${VERSION}-mac-arm64.dmg.sha256"
+cat "dist/CodexUsage-${VERSION}-mac-x86_64.dmg.sha256"

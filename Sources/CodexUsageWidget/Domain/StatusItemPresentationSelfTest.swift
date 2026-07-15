@@ -19,7 +19,7 @@ enum StatusItemPresentationSelfTest {
         expect(TokenFormatter.format(1_234_567_890) == "1.2B", "billions should use B")
         expect(TokenFormatter.format(-1_234_567) == "-1.2M", "negative values should preserve their sign")
 
-        let suiteName = "codexU.status-item-self-test.\(UUID().uuidString)"
+        let suiteName = "CodexUsage.status-item-self-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             print("status item self-test failed: could not create UserDefaults suite")
             return false

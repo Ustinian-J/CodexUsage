@@ -361,7 +361,7 @@ enum GlobalShortcutSelfTest {
     }
 
     private static func withDefaults(_ body: (UserDefaults) -> Void) {
-        let suiteName = "codexU.global-shortcut-self-test.\(UUID().uuidString)"
+        let suiteName = "CodexUsage.global-shortcut-self-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else { return }
         defer { defaults.removePersistentDomain(forName: suiteName) }
         body(defaults)

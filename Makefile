@@ -1,5 +1,5 @@
-APP_NAME := codexU
-DISPLAY_NAME := codexU
+APP_NAME := CodexUsage
+DISPLAY_NAME := CodexUsage
 VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.1.0)
 BUILD_DIR := build
 DIST_DIR := dist
@@ -8,7 +8,7 @@ APP_DIR := $(BUILD_DIR)/$(APP_NAME).app
 MACOS_DIR := $(APP_DIR)/Contents/MacOS
 RESOURCES_DIR := $(APP_DIR)/Contents/Resources
 SOURCES := $(shell find Sources/CodexUsageWidget -name '*.swift' | sort)
-APP_ICON := Resources/codexU.icns
+APP_ICON := Resources/CodexUsage.icns
 DEPLOYMENT_TARGET ?= 13.0
 HOST_ARCH := $(shell uname -m)
 APPLE_SILICON_TARGET_TRIPLE ?= arm64-apple-macos$(DEPLOYMENT_TARGET)
@@ -26,7 +26,7 @@ MACOS_SDK_MAJOR := $(shell xcrun --sdk macosx --show-sdk-version 2>/dev/null | c
 SWIFTC_FEATURE_FLAGS :=
 
 ifeq ($(shell test "$(MACOS_SDK_MAJOR)" -ge 26 2>/dev/null && echo yes),yes)
-SWIFTC_FEATURE_FLAGS += -D CODEXU_HAS_LIQUID_GLASS
+SWIFTC_FEATURE_FLAGS += -D CODEXUSAGE_HAS_LIQUID_GLASS
 endif
 
 ifeq ($(SIGN_IDENTITY),-)

@@ -1,11 +1,11 @@
-# codexU
+# CodexUsage
 
 > [!IMPORTANT]
-> **Upgrade to v1.0.5 or later.** v1.0.5 adapts the quota rings and menu bar layout to the windows Codex actually returns, preserves the full particle experience while rendering it only for a frontmost focused window, and further reduces background polling and avoidable Claude Code cache work. It retains support for ChatGPT.app, legacy Codex.app paths, and the standard CLI. [Download the latest release](https://github.com/shanggqm/codexU/releases/latest).
+> **Upgrade to v1.0.5 or later.** v1.0.5 adapts the quota rings and menu bar layout to the windows Codex actually returns, preserves the full particle experience while rendering it only for a frontmost focused window, and further reduces background polling and avoidable Claude Code cache work. It retains support for ChatGPT.app, legacy Codex.app paths, and the standard CLI. [Download the latest release](https://github.com/Ustinian-J/CodexUsage/releases/latest).
 
-codexU is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT Codex and Claude Code quota, token usage, and today's task status. It keeps the information you check most in the menu bar and main window, so you can quickly see remaining quota, reset times, and daily work progress.
+CodexUsage is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT Codex and Claude Code quota, token usage, and today's task status. It keeps the information you check most in the menu bar and main window, so you can quickly see remaining quota, reset times, and daily work progress.
 
-![codexU v1.0.2 menu bar customization and main window](docs/screenshot-v1.0.2-status-bar-customization.png)
+![CodexUsage v1.0.2 menu bar customization and main window](docs/screenshot-v1.0.2-status-bar-customization.png)
 
 ## Who It Is For
 
@@ -54,30 +54,30 @@ codexU is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT C
 
 ## First Install: Privacy & Security
 
-codexU is distributed outside the Mac App Store. On first launch, macOS may block it until you manually allow it:
+CodexUsage is distributed outside the Mac App Store. On first launch, macOS may block it until you manually allow it:
 
-1. Open `codexU.app` once. If macOS says it cannot be opened, cancel the dialog.
+1. Open `CodexUsage.app` once. If macOS says it cannot be opened, cancel the dialog.
 2. Open **System Settings > Privacy & Security**.
-3. In the **Security** section, click **Open Anyway** for `codexU.app`.
+3. In the **Security** section, click **Open Anyway** for `CodexUsage.app`.
 4. Confirm with Touch ID or your password, then click **Open**.
 
-You can also right-click `codexU.app` in Finder and choose **Open**, then confirm the same security prompt.
+You can also right-click `CodexUsage.app` in Finder and choose **Open**, then confirm the same security prompt.
 
-codexU needs access to local Codex data under `~/.codex/`. When Claude Code stats are used, it also reads local transcripts, tasks, and status cache files under `~/.claude/`. If macOS asks for file or folder access, allow it so the widget can read local usage, threads, and automation metadata.
+CodexUsage needs access to local Codex data under `~/.codex/`. When Claude Code stats are used, it also reads local transcripts, tasks, and status cache files under `~/.claude/`. If macOS asks for file or folder access, allow it so the widget can read local usage, threads, and automation metadata.
 
 ## Install
 
 Download the DMG for your Mac architecture from GitHub Releases:
 
-- Apple Silicon: `codexU-<version>-mac-arm64.dmg`
-- Intel: `codexU-<version>-mac-x86_64.dmg`
+- Apple Silicon: `CodexUsage-<version>-mac-arm64.dmg`
+- Intel: `CodexUsage-<version>-mac-x86_64.dmg`
 
 1. Open the DMG.
-2. Drag `codexU.app` into the `Applications` folder.
-3. Open codexU from `Applications`.
+2. Drag `CodexUsage.app` into the `Applications` folder.
+3. Open CodexUsage from `Applications`.
 4. Complete the **First Install: Privacy & Security** steps above if macOS blocks the first launch.
 
-After installation, codexU checks GitHub Releases for new versions at most once per day by default, including beta releases. The check reads public release metadata only. When an update is available, codexU opens the browser to download the DMG or view the Release page; installation remains manual. You can turn off automatic checks or run a manual check from the System section in Settings.
+After installation, CodexUsage checks GitHub Releases for new versions at most once per day by default, including beta releases. The check reads public release metadata only. When an update is available, CodexUsage opens the browser to download the DMG or view the Release page; installation remains manual. You can turn off automatic checks or run a manual check from the System section in Settings.
 
 ## Requirements
 
@@ -129,10 +129,10 @@ make release-all
 Release artifacts are written to `dist/`, for example:
 
 ```text
-dist/codexU-1.0.5-mac-arm64.dmg
-dist/codexU-1.0.5-mac-arm64.dmg.sha256
-dist/codexU-1.0.5-mac-x86_64.dmg
-dist/codexU-1.0.5-mac-x86_64.dmg.sha256
+dist/CodexUsage-1.0.5-mac-arm64.dmg
+dist/CodexUsage-1.0.5-mac-arm64.dmg.sha256
+dist/CodexUsage-1.0.5-mac-x86_64.dmg
+dist/CodexUsage-1.0.5-mac-x86_64.dmg.sha256
 ```
 
 For Developer ID signing and notarization, see [DISTRIBUTION.md](DISTRIBUTION.md).
@@ -148,28 +148,28 @@ For Developer ID signing and notarization, see [DISTRIBUTION.md](DISTRIBUTION.md
 - Scheduled tasks: enabled automation metadata under `~/.codex/automations/**/automation.toml`.
 - Claude Code historical tokens: assistant `message.usage` fields in `~/.claude/projects/**/*.jsonl`.
 - Claude Code tools, Skills, and tasks: transcript `tool_use.name` / explicit Skill attribution, plus `~/.claude/tasks/**/*.json`.
-- Claude Code active quota: optional `~/Library/Caches/codexU/claude-code/statusline-snapshot.json`; without it, 5-hour and 7-day quota show `--`.
-- Update checks: default access to the GitHub Releases API for public `shanggqm/codexU` release metadata, cached in `~/Library/Caches/codexU/update-check.json`.
+- Claude Code active quota: optional `~/Library/Caches/CodexUsage/claude-code/statusline-snapshot.json`; without it, 5-hour and 7-day quota show `--`.
+- Update checks: default access to the GitHub Releases API for public `Ustinian-J/CodexUsage` release metadata, cached in `~/Library/Caches/CodexUsage/update-check.json`.
 
 Current Codex quota APIs expose rolling-window percentages and reset times, not absolute account quota sizes. Claude Code support reads local history and an optional active snapshot; it is not a Claude.ai official billing view. See [RESEARCH.md](RESEARCH.md) for the data model and fallback behavior.
 
 ## FAQ
 
-### Is codexU an official OpenAI product?
+### Is CodexUsage an official OpenAI product?
 
-No. codexU is an unofficial local macOS utility for reading local Codex app-server responses and local `~/.codex/` data.
+No. CodexUsage is an unofficial local macOS utility for reading local Codex app-server responses and local `~/.codex/` data.
 
-### Does codexU upload my Codex threads or usage data?
+### Does CodexUsage upload my Codex threads or usage data?
 
-No. codexU reads Codex quota, local SQLite usage, and automation metadata locally. It does not upload that data to a third-party service. Update checks only request public GitHub Release metadata and do not include local usage, threads, paths, logs, or account data.
+No. CodexUsage reads Codex quota, local SQLite usage, and automation metadata locally. It does not upload that data to a third-party service. Update checks only request public GitHub Release metadata and do not include local usage, threads, paths, logs, or account data.
 
-### Why does codexU show remaining percentage instead of absolute quota?
+### Why does CodexUsage show remaining percentage instead of absolute quota?
 
-The current local Codex API exposes rolling-window usage percentages and reset times, not absolute quota sizes. codexU therefore shows remaining percentages for the 5-hour and 7-day windows.
+The current local Codex API exposes rolling-window usage percentages and reset times, not absolute quota sizes. CodexUsage therefore shows remaining percentages for the 5-hour and 7-day windows.
 
-### Does codexU support Intel Macs?
+### Does CodexUsage support Intel Macs?
 
-Yes. Intel Macs should use `codexU-<version>-mac-x86_64.dmg`. From source, package it with `make release-intel`, or override `TARGET_TRIPLE="x86_64-apple-macos13.0"` from a compatible toolchain.
+Yes. Intel Macs should use `CodexUsage-<version>-mac-x86_64.dmg`. From source, package it with `make release-intel`, or override `TARGET_TRIPLE="x86_64-apple-macos13.0"` from a compatible toolchain.
 
 ## License
 
@@ -183,6 +183,6 @@ Scan the QR code to follow my WeChat official account for AI tools, Codex usage 
 
 ## User Community
 
-Scan to join the Chinese-language codexU user community for usage tips, issue feedback, and open-source collaboration.
+Scan to join the Chinese-language CodexUsage user community for usage tips, issue feedback, and open-source collaboration.
 
-<img src="docs/codexu-community-qr.jpg" alt="codexU user community WeChat QR code" width="320" />
+<img src="docs/codexu-community-qr.jpg" alt="CodexUsage user community WeChat QR code" width="320" />

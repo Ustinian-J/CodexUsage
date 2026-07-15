@@ -1,23 +1,23 @@
-# codexU
+# CodexUsage
 
 > [!IMPORTANT]
-> **建议升级到 v1.0.5 或更高版本。** v1.0.5 会按 Codex 实际返回的额度窗口自适应单环/双环和菜单栏布局，保留完整粒子体验但只在窗口置前聚焦时渲染，并进一步减少后台轮询、异常额度响应和 Claude Code 缓存带来的资源与可靠性问题；同时继续兼容 ChatGPT.app、旧版 Codex.app 与标准 CLI 路径。[下载最新版本](https://github.com/shanggqm/codexU/releases/latest)。
+> **建议升级到 v1.0.5 或更高版本。** v1.0.5 会按 Codex 实际返回的额度窗口自适应单环/双环和菜单栏布局，保留完整粒子体验但只在窗口置前聚焦时渲染，并进一步减少后台轮询、异常额度响应和 Claude Code 缓存带来的资源与可靠性问题；同时继续兼容 ChatGPT.app、旧版 Codex.app 与标准 CLI 路径。[下载最新版本](https://github.com/Ustinian-J/CodexUsage/releases/latest)。
 
-[产品官网](https://shanggqm.github.io/codexU-site/) · [下载最新版本](https://github.com/shanggqm/codexU/releases/latest) · [English](README.en.md)
+[产品官网](https://Ustinian-J.github.io/CodexUsage-site/) · [下载最新版本](https://github.com/Ustinian-J/CodexUsage/releases/latest) · [English](README.en.md)
 
-codexU 是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / ChatGPT Codex 和 Claude Code 的额度窗口、token 用量和今日任务状态。它把常用信息放在菜单栏和主窗口里，帮助你快速判断剩余额度、重置时间和当天工作进展。
+CodexUsage 是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / ChatGPT Codex 和 Claude Code 的额度窗口、token 用量和今日任务状态。它把常用信息放在菜单栏和主窗口里，帮助你快速判断剩余额度、重置时间和当天工作进展。
 
 ## 界面截图
 
-![codexU v1.0.2 状态栏定制与主界面](docs/screenshot-v1.0.2-status-bar-customization.png)
+![CodexUsage v1.0.2 状态栏定制与主界面](docs/screenshot-v1.0.2-status-bar-customization.png)
 
-![codexU 今日任务视图](docs/screenshot-v0.3.0-today.png)
+![CodexUsage 今日任务视图](docs/screenshot-v0.3.0-today.png)
 
-![codexU 用量趋势视图](docs/screenshot-v0.3.0-usage.png)
+![CodexUsage 用量趋势视图](docs/screenshot-v0.3.0-usage.png)
 
-![codexU 项目排行视图](docs/screenshot-v0.3.0-projects.png)
+![CodexUsage 项目排行视图](docs/screenshot-v0.3.0-projects.png)
 
-![codexU Skill 使用视图](docs/screenshot-v0.3.0-skills.png)
+![CodexUsage Skill 使用视图](docs/screenshot-v0.3.0-skills.png)
 
 ## 适合谁
 
@@ -54,7 +54,7 @@ codexU 是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / Ch
 
 ## 羊毛进度
 
-“羊毛进度”是 codexU 对本月 Codex 使用量的 API 等效价值估算。它把本机解析到的未缓存输入、命中缓存输入和输出 token，按对应模型的 OpenAI API token 单价折算成美元金额，并和 Plus、Pro 100、Pro 200 以及满额月价值做对比。这个指标解决的问题是：Codex 额度本身通常只显示百分比和重置时间，token 数量也不容易直观看出“用了多少价值”；羊毛进度提供一个统一的金额口径，帮助你判断本月订阅成本大致回收到了哪个区间。
+“羊毛进度”是 CodexUsage 对本月 Codex 使用量的 API 等效价值估算。它把本机解析到的未缓存输入、命中缓存输入和输出 token，按对应模型的 OpenAI API token 单价折算成美元金额，并和 Plus、Pro 100、Pro 200 以及满额月价值做对比。这个指标解决的问题是：Codex 额度本身通常只显示百分比和重置时间，token 数量也不容易直观看出“用了多少价值”；羊毛进度提供一个统一的金额口径，帮助你判断本月订阅成本大致回收到了哪个区间。
 
 单次 token 用量的估算公式为：
 
@@ -81,30 +81,30 @@ API 等效价值 =
 
 ## 首次安装：隐私与安全
 
-codexU 目前通过 GitHub Release 的 DMG 安装包分发，不经过 Mac App Store。第一次打开时，macOS 可能会拦截，需要手动允许：
+CodexUsage 目前通过 GitHub Release 的 DMG 安装包分发，不经过 Mac App Store。第一次打开时，macOS 可能会拦截，需要手动允许：
 
-1. 打开 `codexU.app` 一次。如果系统提示无法打开，先取消弹窗。
+1. 打开 `CodexUsage.app` 一次。如果系统提示无法打开，先取消弹窗。
 2. 打开 **系统设置 > 隐私与安全性**。
-3. 在 **安全性** 区域找到 `codexU.app`，点击 **仍要打开**。
+3. 在 **安全性** 区域找到 `CodexUsage.app`，点击 **仍要打开**。
 4. 使用 Touch ID 或密码确认，然后点击 **打开**。
 
-也可以在 Finder 中右键点击 `codexU.app`，选择 **打开**，再确认系统安全提示。
+也可以在 Finder 中右键点击 `CodexUsage.app`，选择 **打开**，再确认系统安全提示。
 
-codexU 需要读取本机 `~/.codex/` 下的 Codex 数据；如果启用 Claude Code 统计，还会读取 `~/.claude/` 下的本机 transcript、任务和状态缓存。如果 macOS 弹出文件或文件夹访问授权，请允许访问，否则小组件无法读取本机 usage、线程和自动化任务信息。
+CodexUsage 需要读取本机 `~/.codex/` 下的 Codex 数据；如果启用 Claude Code 统计，还会读取 `~/.claude/` 下的本机 transcript、任务和状态缓存。如果 macOS 弹出文件或文件夹访问授权，请允许访问，否则小组件无法读取本机 usage、线程和自动化任务信息。
 
 ## 安装
 
 从 GitHub Release 下载与你的 Mac 芯片匹配的安装包：
 
-- Apple Silicon：`codexU-<version>-mac-arm64.dmg`
-- Intel：`codexU-<version>-mac-x86_64.dmg`
+- Apple Silicon：`CodexUsage-<version>-mac-arm64.dmg`
+- Intel：`CodexUsage-<version>-mac-x86_64.dmg`
 
 1. 打开 DMG。
-2. 将 `codexU.app` 拖到 `Applications` 文件夹。
-3. 从 `Applications` 打开 codexU。
+2. 将 `CodexUsage.app` 拖到 `Applications` 文件夹。
+3. 从 `Applications` 打开 CodexUsage。
 4. 按上面的 **首次安装：隐私与安全** 步骤完成手动放行。
 
-安装后，codexU 默认每天最多自动检查一次 GitHub Release 是否有新版本，并接收 beta 版本。该检查只读取公开 Release 元数据；发现新版时会打开浏览器下载 DMG 或查看 Release 页面，安装仍由你手动完成。可以在设置窗口的系统区关闭自动检查，或手动点击“检查更新”。
+安装后，CodexUsage 默认每天最多自动检查一次 GitHub Release 是否有新版本，并接收 beta 版本。该检查只读取公开 Release 元数据；发现新版时会打开浏览器下载 DMG 或查看 Release 页面，安装仍由你手动完成。可以在设置窗口的系统区关闭自动检查，或手动点击“检查更新”。
 
 ## 运行要求
 
@@ -156,10 +156,10 @@ make release-all
 产物会写入 `dist/`，例如：
 
 ```text
-dist/codexU-1.0.5-mac-arm64.dmg
-dist/codexU-1.0.5-mac-arm64.dmg.sha256
-dist/codexU-1.0.5-mac-x86_64.dmg
-dist/codexU-1.0.5-mac-x86_64.dmg.sha256
+dist/CodexUsage-1.0.5-mac-arm64.dmg
+dist/CodexUsage-1.0.5-mac-arm64.dmg.sha256
+dist/CodexUsage-1.0.5-mac-x86_64.dmg
+dist/CodexUsage-1.0.5-mac-x86_64.dmg.sha256
 ```
 
 Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTION.md)。
@@ -175,28 +175,28 @@ Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTI
 - 定时任务：`~/.codex/automations/**/automation.toml` 中启用的 automation 元数据。
 - Claude Code 历史 token：`~/.claude/projects/**/*.jsonl` 中 assistant message 的 `message.usage` 字段。
 - Claude Code 工具、Skill 和任务：transcript 中的 `tool_use.name` / 显式 Skill attribution，以及 `~/.claude/tasks/**/*.json`。
-- Claude Code active 额度：可选读取 `~/Library/Caches/codexU/claude-code/statusline-snapshot.json`；缺失时 5 小时/7 日额度显示为 `--`。
-- 更新检测：默认访问 GitHub Releases API，读取 `shanggqm/codexU` 的公开 release 元数据，并把检查结果缓存到 `~/Library/Caches/codexU/update-check.json`。
+- Claude Code active 额度：可选读取 `~/Library/Caches/CodexUsage/claude-code/statusline-snapshot.json`；缺失时 5 小时/7 日额度显示为 `--`。
+- 更新检测：默认访问 GitHub Releases API，读取 `Ustinian-J/CodexUsage` 的公开 release 元数据，并把检查结果缓存到 `~/Library/Caches/CodexUsage/update-check.json`。
 
 当前 Codex 额度 API 暴露的是滚动窗口百分比和重置时间，不暴露绝对配额数量；Claude Code 首版只读取本地历史记录和可选 active snapshot，不代表 Claude.ai 官方账单。更完整的数据口径和回退策略见 [RESEARCH.md](RESEARCH.md)。
 
 ## 常见问题
 
-### codexU 是官方 OpenAI 产品吗？
+### CodexUsage 是官方 OpenAI 产品吗？
 
-不是。codexU 是一个非官方的本地 macOS 工具，用于读取本机 Codex app-server 和本机 `~/.codex/` 数据。
+不是。CodexUsage 是一个非官方的本地 macOS 工具，用于读取本机 Codex app-server 和本机 `~/.codex/` 数据。
 
-### codexU 会上传我的 Codex 线程或 usage 数据吗？
+### CodexUsage 会上传我的 Codex 线程或 usage 数据吗？
 
-不会。codexU 只在本机读取 Codex 账户额度、本机 SQLite usage 和 automation 元数据，不把这些数据上传到第三方服务。自动更新检测只请求 GitHub Release 的公开版本元数据，不携带本机 usage、线程、路径、日志或账户数据。
+不会。CodexUsage 只在本机读取 Codex 账户额度、本机 SQLite usage 和 automation 元数据，不把这些数据上传到第三方服务。自动更新检测只请求 GitHub Release 的公开版本元数据，不携带本机 usage、线程、路径、日志或账户数据。
 
 ### 为什么显示的是剩余百分比，而不是绝对额度？
 
-当前 Codex 本地 API 暴露的是滚动窗口已用百分比和重置时间，不暴露绝对额度数量，所以 codexU 展示的是 5 小时和 7 天窗口的剩余百分比。
+当前 Codex 本地 API 暴露的是滚动窗口已用百分比和重置时间，不暴露绝对额度数量，所以 CodexUsage 展示的是 5 小时和 7 天窗口的剩余百分比。
 
 ### 支持 Intel Mac 吗？
 
-支持。Intel Mac 下载 `codexU-<version>-mac-x86_64.dmg`。从源码打包时使用 `make release-intel`，或在支持对应 target 的机器上使用 `TARGET_TRIPLE="x86_64-apple-macos13.0"`。
+支持。Intel Mac 下载 `CodexUsage-<version>-mac-x86_64.dmg`。从源码打包时使用 `make release-intel`，或在支持对应 target 的机器上使用 `TARGET_TRIPLE="x86_64-apple-macos13.0"`。
 
 ## License
 
@@ -210,6 +210,6 @@ MIT. See [LICENSE](LICENSE).
 
 ## 用户交流群
 
-扫码加入 codexU 用户交流群，交流使用经验、反馈问题，也欢迎一起参与开源共建。
+扫码加入 CodexUsage 用户交流群，交流使用经验、反馈问题，也欢迎一起参与开源共建。
 
-<img src="docs/codexu-community-qr.jpg" alt="codexU 用户交流群二维码" width="320" />
+<img src="docs/codexu-community-qr.jpg" alt="CodexUsage 用户交流群二维码" width="320" />
