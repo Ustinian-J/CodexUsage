@@ -1,0 +1,72 @@
+name: macOS CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package-intel:
+    name: Test and package Intel app
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+
+    steps:
+      # Pinned to the verified actions/checkout v4.3.1 commit.
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Audit scripts and product identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+          plutil -lint Resources/Info.plist
+          ./scripts/test-product-identity.sh
+          ./scripts/test-macos-compatibility.sh
+          ./scripts/test-ci-security.sh
+          git diff --check
+
+      - name: Build and run self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build
+          binary="build/CodexUsage.app/Contents/MacOS/CodexUsage"
+          "$binary" --self-test-statistics-time-zone
+          "$binary" --self-test-status-item
+          "$binary" --self-test-rate-limits
+          "$binary" --self-test-particle-animation
+          "$binary" --self-test-updates
+          ./scripts/test-parsers.sh
+
+      - name: Package and verify Intel DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          make release-intel SWIFT_OPTIMIZATION=-O
+          checksum="$(find dist -maxdepth 1 -name '*-mac-x86_64.dmg.sha256' -print -quit)"
+          test -n "$checksum"
+          shasum -a 256 -c "$checksum"
+          dmg="${checksum%.sha256}"
+          hdiutil verify "$dmg"
+          file build/CodexUsage.app/Contents/MacOS/CodexUsage | grep -q 'x86_64'
+          codesign --verify --deep --strict build/CodexUsage.app
+
+      # Pinned to the verified actions/upload-artifact v4.6.2 commit.
+      - name: Upload Intel installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CodexUsage-intel
+          path: |
+            dist/*-mac-x86_64.dmg
+            dist/*-mac-x86_64.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7
