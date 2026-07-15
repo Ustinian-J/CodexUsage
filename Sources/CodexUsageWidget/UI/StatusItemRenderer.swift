@@ -219,7 +219,7 @@ struct StatusItemRenderer {
         )
         NSColor.labelColor.withAlphaComponent(0.035).setFill()
         path.fill()
-        NSColor.labelColor.withAlphaComponent(0.30).setStroke()
+        NSColor.labelColor.withAlphaComponent(0.42).setStroke()
         path.lineWidth = 1
         path.stroke()
     }

@@ -290,11 +290,13 @@ enum StatusItemPresentationSelfTest {
         let renderer = StatusItemRenderer()
         let minimalImage = renderer.render(minimal, appearance: NSAppearance(named: .aqua))
         if let bitmap = minimalImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2),
-           let edge = bitmap.colorAt(x: 1, y: bitmap.pixelsHigh / 2) {
+           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2) {
+            let edgeAlpha = (0...min(2, bitmap.pixelsWide - 1))
+                .compactMap { bitmap.colorAt(x: $0, y: bitmap.pixelsHigh / 2)?.alphaComponent }
+                .max() ?? 0
             expect(center.alphaComponent > 0.02, "minimal mode must have a visible capsule background")
             expect(
-                edge.alphaComponent > center.alphaComponent + 0.08,
+                edgeAlpha > center.alphaComponent + 0.08,
                 "minimal mode capsule border must be stronger than its background"
             )
         } else {
@@ -336,11 +338,13 @@ enum StatusItemPresentationSelfTest {
         expect(aquaImage.size == classic.imageSize, "Aqua render should preserve presentation size")
         expect(darkImage.size == classic.imageSize, "Dark Aqua render should preserve presentation size")
         if let bitmap = aquaImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2),
-           let edge = bitmap.colorAt(x: 1, y: bitmap.pixelsHigh / 2) {
+           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2) {
+            let edgeAlpha = (0...min(2, bitmap.pixelsWide - 1))
+                .compactMap { bitmap.colorAt(x: $0, y: bitmap.pixelsHigh / 2)?.alphaComponent }
+                .max() ?? 0
             expect(center.alphaComponent > 0.02, "status item must have a visible capsule background")
             expect(
-                edge.alphaComponent > 0.08,
+                edgeAlpha > 0.20,
                 "status item capsule border must be visibly rendered"
             )
         } else {
@@ -424,7 +428,7 @@ enum StatusItemPresentationSelfTest {
             var inkY: [Int] = []
             for y in minPixelY...maxPixelY {
                 for x in minPixelX...maxPixelX
-                    where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.05 {
+                    where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.35 {
                     inkX.append(x)
                     inkY.append(y)
                 }
