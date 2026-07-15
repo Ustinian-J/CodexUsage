@@ -81,6 +81,7 @@ struct RuntimeStatusMenuView: View {
                 }
             }
             totalRow
+            accountCycleRow
             AppUpdateMenuRow(updateStore: updateStore, language: language)
             footer
         }
@@ -141,6 +142,92 @@ struct RuntimeStatusMenuView: View {
                         .strokeBorder(WidgetPalette.controlStroke(colorScheme), lineWidth: 0.8)
                 )
         )
+    }
+
+    private var accountCycleRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                compactCycleValue(
+                    title: language.text("可用重置", "Resets"),
+                    value: resetCount.map { String($0) } ?? "--"
+                )
+                Divider().frame(height: 14)
+                compactCycleValue(
+                    title: language.text("最近到期", "Next expiry"),
+                    value: nextResetExpiry.map(runtimeCompactDateTime) ?? "--"
+                )
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "creditcard")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(language.text("订阅到期", "Subscription"))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(subscriptionSummary)
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(WidgetPalette.controlFill(colorScheme))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(WidgetPalette.controlStroke(colorScheme), lineWidth: 0.8)
+                )
+        )
+    }
+
+    private func compactCycleValue(title: String, value: String) -> some View {
+        HStack(spacing: 5) {
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var codexSnapshot: UsageSnapshot? {
+        store.runtimeSnapshot(for: .codex)?.snapshot
+    }
+
+    private var resetCount: Int? {
+        codexSnapshot?.credits?.resetCredits?.availableCount
+    }
+
+    private var nextResetExpiry: Date? {
+        let now = Date()
+        return codexSnapshot?.credits?.resetCredits?.credits
+            .compactMap(\.expiresAt)
+            .filter { $0 > now }
+            .min()
+    }
+
+    private var subscriptionSummary: String {
+        let status = SubscriptionExpiration.status(
+            enabled: settings.subscriptionExpirationEnabled,
+            expirationDate: settings.subscriptionExpirationDate
+        )
+        switch status {
+        case .unconfigured:
+            return language.text("未设置（设置中记录）", "Not set (configure in Settings)")
+        case .active(let daysRemaining):
+            return language.text(
+                "\(accountDateOnly(settings.subscriptionExpirationDate, language: language)) · \(daysRemaining) 天",
+                "\(accountDateOnly(settings.subscriptionExpirationDate, language: language)) · \(daysRemaining)d"
+            )
+        case .expiresToday:
+            return language.text("今天到期", "Expires today")
+        case .expired(let daysAgo):
+            return language.text("已过期 \(daysAgo) 天", "Expired \(daysAgo)d ago")
+        }
     }
 
     private var footer: some View {
@@ -510,5 +597,11 @@ private func runtimeFormatPercent(_ value: Double?) -> String {
 private func runtimeTimeOnly(_ date: Date) -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm"
+    return formatter.string(from: date)
+}
+
+private func runtimeCompactDateTime(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "M/d HH:mm"
     return formatter.string(from: date)
 }

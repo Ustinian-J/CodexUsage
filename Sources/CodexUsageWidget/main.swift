@@ -17,7 +17,7 @@ struct CreditsInfo: Equatable {
     let hasCredits: Bool
     let unlimited: Bool
     let balance: String?
-    let resetCredits: Int?
+    let resetCredits: RateLimitResetCredits?
 }
 
 struct AccountInfo: Equatable {
@@ -1201,10 +1201,7 @@ final class CodexUsageReader {
         }
         snapshot.rateLimitDiagnostics = diagnostics
 
-        var resetCredits: Int?
-        if let reset = result["rateLimitResetCredits"] as? [String: Any] {
-            resetCredits = intValue(reset["availableCount"])
-        }
+        let resetCredits = RateLimitResetCredits.parse(result["rateLimitResetCredits"])
 
         if let credits = limits["credits"] as? [String: Any] {
             snapshot.credits = CreditsInfo(
@@ -2927,6 +2924,8 @@ final class AppSettings: ObservableObject {
     private static let visibleRuntimeScopesKey = "CodexUsage.visibleRuntimeScopes"
     private static let automaticUpdateChecksEnabledKey = "CodexUsage.update.autoCheckEnabled"
     private static let quotaAlertsEnabledKey = "CodexUsage.quotaAlerts.enabled"
+    private static let subscriptionExpirationEnabledKey = "CodexUsage.subscriptionExpiration.enabled"
+    private static let subscriptionExpirationDateKey = "CodexUsage.subscriptionExpiration.date"
     private static let skippedUpdateVersionKey = "CodexUsage.update.skippedVersion"
 
     private let defaults: UserDefaults
@@ -2974,6 +2973,18 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var subscriptionExpirationEnabled: Bool {
+        didSet {
+            defaults.set(subscriptionExpirationEnabled, forKey: Self.subscriptionExpirationEnabledKey)
+        }
+    }
+
+    @Published var subscriptionExpirationDate: Date {
+        didSet {
+            defaults.set(subscriptionExpirationDate, forKey: Self.subscriptionExpirationDateKey)
+        }
+    }
+
     @Published private(set) var skippedUpdateVersion: String? {
         didSet {
             if let skippedUpdateVersion {
@@ -3017,6 +3028,14 @@ final class AppSettings: ObservableObject {
         } else {
             quotaAlertsEnabled = defaults.bool(forKey: Self.quotaAlertsEnabledKey)
         }
+        if defaults.object(forKey: Self.subscriptionExpirationEnabledKey) == nil {
+            subscriptionExpirationEnabled = false
+        } else {
+            subscriptionExpirationEnabled = defaults.bool(forKey: Self.subscriptionExpirationEnabledKey)
+        }
+        subscriptionExpirationDate = defaults.object(forKey: Self.subscriptionExpirationDateKey) as? Date
+            ?? Calendar.current.date(byAdding: .month, value: 1, to: Date())
+            ?? Date()
         skippedUpdateVersion = defaults.string(forKey: Self.skippedUpdateVersionKey)
         visibleRuntimeScopes = Self.storedVisibleRuntimeScopes(defaults: defaults)
         statusItemPreferences = StatusItemPreferencesStore.load(defaults: defaults)
@@ -3155,6 +3174,7 @@ final class AppSettings: ObservableObject {
 enum DashboardTab: String, CaseIterable, Equatable, Identifiable {
     case tasks
     case usage
+    case account
     case projects
     case skills
 
@@ -3396,6 +3416,12 @@ struct UsageWidgetView: View {
                 runtimeScope: store.selectedRuntimeScope,
                 language: language
             )
+        case .account:
+            AccountMonitorPanel(
+                snapshot: snapshot,
+                settings: settings,
+                language: language
+            )
         case .projects:
             ProjectBoardPanel(
                 projectBoard: snapshot.local?.projectBoard,
@@ -3483,6 +3509,12 @@ struct UsageWidgetView: View {
             guard let trend = snapshot.local?.usageTrend else { return language.text("读取中", "Loading") }
             let quality = trend.sourceQuality == .approximate ? language.text("粗略统计", "Approx.") : language.text("精细统计", "Detailed")
             return language.text("\(trend.activeDayCount) 活跃日 · \(quality)", "\(trend.activeDayCount) active days · \(quality)")
+        case .account:
+            let plan = snapshot.account?.planType?.uppercased() ?? "--"
+            let resets = snapshot.credits?.resetCredits?.availableCount
+            return resets.map {
+                language.text("\(plan) · \($0) 次可用重置", "\(plan) · \($0) resets available")
+            } ?? language.text("\(plan) · 重置次数未知", "\(plan) · reset count unavailable")
         case .projects:
             let activeCount = snapshot.local?.projectBoard?.recentProjects.count ?? 0
             let totalCount = snapshot.local?.projectBoard?.allProjects.count ?? 0
@@ -4018,6 +4050,30 @@ struct SettingsPanelView: View {
                         detail: language.text("来自本机账户读取结果", "Read from the local account result"),
                         value: planLabel
                     )
+                    SettingsToggleRow(
+                        title: language.text("记录订阅到期日", "Track subscription expiry"),
+                        detail: language.text(
+                            "官方账户接口未提供该日期；仅保存在本机设置中",
+                            "The official account API does not provide this date; stored only in local settings"
+                        )
+                    ) {
+                        SettingsSwitchToggle(isOn: $settings.subscriptionExpirationEnabled)
+                    }
+                    if settings.subscriptionExpirationEnabled {
+                        SettingsPickerRow(
+                            title: language.text("订阅到期日期", "Subscription expiry date"),
+                            detail: language.text("用于菜单栏倒计时，不会上传", "Used for the menu bar countdown and never uploaded")
+                        ) {
+                            DatePicker(
+                                "",
+                                selection: $settings.subscriptionExpirationDate,
+                                displayedComponents: [.date]
+                            )
+                            .labelsHidden()
+                            .datePickerStyle(.field)
+                            .frame(width: 220)
+                        }
+                    }
                     SettingsToggleRow(
                         title: language.text("低额度本地提醒", "Low-quota local alerts"),
                         detail: language.text(
@@ -6062,6 +6118,217 @@ struct QuotaResetLine: View {
     private var resetText: String {
         guard let resetsAt = window.resetsAt else { return "--" }
         return resetDateTime(resetsAt, language: language)
+    }
+}
+
+struct AccountMonitorPanel: View {
+    @ObservedObject var settings: AppSettings
+    let snapshot: UsageSnapshot
+    let language: WidgetLanguage
+
+    init(snapshot: UsageSnapshot, settings: AppSettings, language: WidgetLanguage) {
+        self.snapshot = snapshot
+        self.settings = settings
+        self.language = language
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: dashboardGridSpacing) {
+            cycleCard
+            resetCreditsCard
+        }
+    }
+
+    private var cycleCard: some View {
+        VStack(alignment: .leading, spacing: dashboardCardContentSpacing) {
+            SectionTitle(
+                title: language.text("额度与订阅周期", "Quota & subscription cycles"),
+                detail: snapshot.account?.planType?.uppercased() ?? "--"
+            )
+            AccountMonitorRow(
+                systemName: "clock.arrow.circlepath",
+                title: language.text("5 小时额度重置", "5-hour quota reset"),
+                value: snapshot.fiveHourQuota?.resetsAt.map { accountDateTime($0, language: language) } ?? "--",
+                detail: language.text("官方 resetsAt", "Official resetsAt")
+            )
+            AccountMonitorRow(
+                systemName: "calendar.badge.clock",
+                title: language.text("7 天额度重置", "7-day quota reset"),
+                value: snapshot.sevenDayQuota?.resetsAt.map { accountDateTime($0, language: language) } ?? "--",
+                detail: language.text("官方 resetsAt", "Official resetsAt")
+            )
+            AccountMonitorRow(
+                systemName: "creditcard",
+                title: language.text("订阅到期", "Subscription expiry"),
+                value: subscriptionDateText,
+                detail: subscriptionStatusText
+            )
+        }
+        .padding(dashboardCardPadding)
+        .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
+        .cardBackground(cornerRadius: dashboardCardCornerRadius, elevated: true)
+    }
+
+    private var resetCreditsCard: some View {
+        VStack(alignment: .leading, spacing: dashboardCardContentSpacing) {
+            SectionTitle(
+                title: language.text("额度重置次数", "Rate-limit resets"),
+                detail: resetCountText
+            )
+
+            if let summary = snapshot.credits?.resetCredits {
+                if summary.detailsProvided {
+                    if summary.credits.isEmpty {
+                        accountEmptyState(
+                            icon: "checkmark.circle",
+                            title: language.text("当前没有可用重置项", "No reset credits available"),
+                            detail: language.text("官方返回了空明细列表", "The official detail list is empty")
+                        )
+                    } else {
+                        ForEach(Array(summary.credits.prefix(5).enumerated()), id: \.element.id) { index, credit in
+                            resetCreditRow(credit, index: index)
+                        }
+                        if summary.credits.count < summary.availableCount {
+                            Text(language.text(
+                                "官方明细可能有上限；总数以 \(summary.availableCount) 为准。",
+                                "The backend may cap details; \(summary.availableCount) is the authoritative count."
+                            ))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    accountEmptyState(
+                        icon: "list.number",
+                        title: language.text("可用 \(summary.availableCount) 次", "\(summary.availableCount) resets available"),
+                        detail: language.text("官方只返回总数，未返回每项到期时间", "The official response returned only a count, not per-item expiry")
+                    )
+                }
+            } else {
+                accountEmptyState(
+                    icon: "questionmark.circle",
+                    title: language.text("重置次数暂不可用", "Reset count unavailable"),
+                    detail: language.text("当前账户响应没有 rateLimitResetCredits", "The current account response has no rateLimitResetCredits")
+                )
+            }
+        }
+        .padding(dashboardCardPadding)
+        .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
+        .cardBackground(cornerRadius: dashboardCardCornerRadius, elevated: true)
+    }
+
+    private func resetCreditRow(_ credit: RateLimitResetCredit, index: Int) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(WidgetPalette.statusInfo)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(credit.title ?? language.text("额度重置 #\(index + 1)", "Rate-limit reset #\(index + 1)"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                Text(resetCreditExpiryText(credit))
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Spacer(minLength: 8)
+            Text(localizedResetCreditStatus(credit.status, language: language))
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(WidgetPalette.statusInfo)
+        }
+        .padding(.horizontal, dashboardRowPadding)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: dashboardRowCornerRadius).fill(WidgetPalette.surfaceTrack.opacity(0.6)))
+    }
+
+    private func accountEmptyState(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var resetCountText: String {
+        guard let count = snapshot.credits?.resetCredits?.availableCount else { return "--" }
+        return language.text("可用 \(count) 次", "\(count) available")
+    }
+
+    private var subscriptionDateText: String {
+        guard settings.subscriptionExpirationEnabled else {
+            return language.text("未设置", "Not set")
+        }
+        return accountDateOnly(settings.subscriptionExpirationDate, language: language)
+    }
+
+    private var subscriptionStatusText: String {
+        switch SubscriptionExpiration.status(
+            enabled: settings.subscriptionExpirationEnabled,
+            expirationDate: settings.subscriptionExpirationDate
+        ) {
+        case .unconfigured:
+            return language.text("官方未提供；可在设置中本地记录", "Not provided officially; set it locally in Settings")
+        case .active(let daysRemaining):
+            return language.text("剩余 \(daysRemaining) 天 · 本地记录", "\(daysRemaining) days left · local record")
+        case .expiresToday:
+            return language.text("今天到期 · 本地记录", "Expires today · local record")
+        case .expired(let daysAgo):
+            return language.text("已过期 \(daysAgo) 天 · 请核对续订", "Expired \(daysAgo) days ago · check renewal")
+        }
+    }
+
+    private func resetCreditExpiryText(_ credit: RateLimitResetCredit) -> String {
+        guard let expiresAt = credit.expiresAt else {
+            return language.text("无到期时间", "No expiry")
+        }
+        return language.text(
+            "到期 \(accountDateTime(expiresAt, language: language))",
+            "Expires \(accountDateTime(expiresAt, language: language))"
+        )
+    }
+}
+
+private struct AccountMonitorRow: View {
+    let systemName: String
+    let title: String
+    let value: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(WidgetPalette.statusInfo)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+        .padding(.horizontal, dashboardRowPadding)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: dashboardRowCornerRadius).fill(WidgetPalette.surfaceTrack.opacity(0.6)))
     }
 }
 
@@ -8199,7 +8466,7 @@ private let heatmapCellSize: CGFloat = 10
 private let chartTooltipWidth: CGFloat = 188
 
 func runtimeStatusPopoverHeight(for runtimeCount: Int) -> CGFloat {
-    runtimeCount <= 1 ? 352 : 478
+    runtimeCount <= 1 ? 412 : 538
 }
 
 private func chartTooltipPosition(anchor: CGPoint, containerSize: CGSize, rowCount: Int) -> CGPoint {
@@ -8262,6 +8529,8 @@ private func localizedDashboardTitle(_ tab: DashboardTab, language: WidgetLangua
         return language.text("今日任务看板", "Today's task board")
     case .usage:
         return language.text("用量趋势", "Usage trend")
+    case .account:
+        return language.text("账户周期", "Account cycles")
     case .projects:
         return language.text("项目排行", "Project ranking")
     case .skills:
@@ -8275,6 +8544,8 @@ private func localizedDashboardTabLabel(_ tab: DashboardTab, language: WidgetLan
         return language.text("今日任务", "Today")
     case .usage:
         return language.text("用量趋势", "Usage")
+    case .account:
+        return language.text("账户周期", "Account")
     case .projects:
         return language.text("项目排行", "Projects")
     case .skills:
@@ -8288,6 +8559,8 @@ private func dashboardTabIcon(_ tab: DashboardTab) -> String {
         return "checklist"
     case .usage:
         return "calendar"
+    case .account:
+        return "person.crop.circle.badge.clock"
     case .projects:
         return "folder"
     case .skills:
@@ -8624,6 +8897,33 @@ private func resetDateTime(_ date: Date, language: WidgetLanguage = .zh) -> Stri
     return formatter.string(from: date)
 }
 
+func accountDateTime(_ date: Date, language: WidgetLanguage = .zh) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: language.isChinese ? "zh_CN" : "en_US_POSIX")
+    formatter.dateFormat = language.isChinese ? "yyyy/M/d HH:mm" : "MMM d, yyyy HH:mm"
+    return formatter.string(from: date)
+}
+
+func accountDateOnly(_ date: Date, language: WidgetLanguage = .zh) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: language.isChinese ? "zh_CN" : "en_US_POSIX")
+    formatter.dateFormat = language.isChinese ? "yyyy/M/d" : "MMM d, yyyy"
+    return formatter.string(from: date)
+}
+
+func localizedResetCreditStatus(_ status: RateLimitResetCreditStatus, language: WidgetLanguage) -> String {
+    switch status {
+    case .available:
+        return language.text("可用", "Available")
+    case .redeeming:
+        return language.text("处理中", "Redeeming")
+    case .redeemed:
+        return language.text("已使用", "Redeemed")
+    case .unknown:
+        return language.text("未知", "Unknown")
+    }
+}
+
 private func isoString(_ date: Date?) -> String? {
     guard let date else { return nil }
     let formatter = ISO8601DateFormatter()
@@ -8632,6 +8932,18 @@ private func isoString(_ date: Date?) -> String? {
 
 private func jsonValue<T>(_ value: T?) -> Any {
     value.map { $0 as Any } ?? NSNull()
+}
+
+private func resetCreditJSONObject(_ credit: RateLimitResetCredit) -> [String: Any] {
+    [
+        "id": credit.id,
+        "title": jsonValue(credit.title),
+        "description": jsonValue(credit.detail),
+        "grantedAt": jsonValue(isoString(credit.grantedAt)),
+        "expiresAt": jsonValue(isoString(credit.expiresAt)),
+        "resetType": credit.resetType,
+        "status": credit.status.rawValue
+    ] as [String: Any]
 }
 
 private func jsonObject(_ usage: PricedTokenUsage) -> [String: Any] {
@@ -8720,7 +9032,9 @@ private func dumpJSON(_ snapshot: UsageSnapshot) {
             "hasCredits": credits.hasCredits,
             "unlimited": credits.unlimited,
             "balance": jsonValue(credits.balance),
-            "resetCredits": jsonValue(credits.resetCredits)
+            "resetCredits": jsonValue(credits.resetCredits?.availableCount),
+            "resetCreditDetailsProvided": credits.resetCredits?.detailsProvided ?? false,
+            "resetCreditDetails": credits.resetCredits?.credits.map { resetCreditJSONObject($0) } ?? []
         ] as [String: Any]
     }
 
@@ -9716,6 +10030,14 @@ struct CodexUsageMain {
 
         if CommandLine.arguments.contains("--self-test-quota-alerts") {
             exit(QuotaAlertPolicySelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-reset-credits") {
+            exit(RateLimitResetCreditsSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-subscription-expiration") {
+            exit(SubscriptionExpirationSelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--dump-json") {

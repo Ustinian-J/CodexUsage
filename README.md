@@ -2,7 +2,7 @@
 
 CodexUsage 是一个本地优先的 macOS 菜单栏应用，用圆环展示 Codex 5 小时与每周额度余量，并统计今日、近 7 天和累计 token。主窗口还会把本机 Codex 对话和自动化任务整理成今日任务看板。
 
-> 当前版本为 `0.1.0`。项目将使用干净的 GitHub Intel 与 Apple Silicon macOS runner 完成首次构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
+> 当前版本为 `0.2.0`。项目使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
 
 ## 功能
 
@@ -12,6 +12,9 @@ CodexUsage 是一个本地优先的 macOS 菜单栏应用，用圆环展示 Code
 - 从本机 Codex 线程和启用中的 automation 生成今日任务看板；今日对话进度按 `今日已归档对话 / 今日对话任务总数` 估算，定时任务不计入完成率。
 - 比较额度窗口已过时间与已用比例，标记“宽裕 / 正常 / 偏快”；该提示只反映使用节奏，不预测实际可用 token。
 - 可选开启 20%、10%、5% 低额度本地通知；默认关闭，每个额度重置周期的每个阈值最多提醒一次。
+- 读取官方 `rateLimitResetCredits.availableCount` 和逐项 `expiresAt`，展示可用重置次数与每项到期时间。
+- 账户周期页集中展示 5 小时、7 天额度重置时间、套餐、重置项明细和订阅到期倒计时。
+- 订阅到期日为显式启用的本地记录；当前官方 `account/read` schema 不提供该字段，日期不会上传。
 - 展示用量趋势、项目排行、工具与 Skill 使用统计。
 - 可选读取 Claude Code 本机统计；不使用时不会影响 Codex 功能。
 - `Command + U` 默认显示或隐藏主窗口，可在设置中修改。

@@ -66,7 +66,9 @@ private func runtimeLegacyJSONObject(_ snapshot: UsageSnapshot) -> [String: Any]
             "hasCredits": credits.hasCredits,
             "unlimited": credits.unlimited,
             "balance": runtimeJSONValue(credits.balance),
-            "resetCredits": runtimeJSONValue(credits.resetCredits)
+            "resetCredits": runtimeJSONValue(credits.resetCredits?.availableCount),
+            "resetCreditDetailsProvided": credits.resetCredits?.detailsProvided ?? false,
+            "resetCreditDetails": credits.resetCredits?.credits.map { runtimeJSONObject($0) } ?? []
         ] as [String: Any]
     }
 
@@ -87,6 +89,18 @@ private func runtimeJSONObject(_ window: RateWindow) -> [String: Any] {
         "remainingPercent": window.remainingPercent,
         "windowDurationMins": runtimeJSONValue(window.windowDurationMins),
         "resetsAt": runtimeJSONValue(runtimeISOString(window.resetsAt))
+    ] as [String: Any]
+}
+
+private func runtimeJSONObject(_ credit: RateLimitResetCredit) -> [String: Any] {
+    [
+        "id": credit.id,
+        "title": runtimeJSONValue(credit.title),
+        "description": runtimeJSONValue(credit.detail),
+        "grantedAt": runtimeJSONValue(runtimeISOString(credit.grantedAt)),
+        "expiresAt": runtimeJSONValue(runtimeISOString(credit.expiresAt)),
+        "resetType": credit.resetType,
+        "status": credit.status.rawValue
     ] as [String: Any]
 }
 

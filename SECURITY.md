@@ -44,6 +44,8 @@ Automatic update checks are disabled by default. Enabling them is an explicit us
 
 Quota alerts are disabled by default. Enabling them explicitly requests macOS notification permission. Alert state stores only the quota window kind, reset timestamp, and thresholds already emitted. Notification content contains only the window label, remaining percentage, and reset time; it must not contain account, thread, prompt, task, path, token credential, or transcript data.
 
+Reset-credit details are read only from the official local Codex app-server response and are not persisted outside the current in-memory snapshot. Subscription expiry tracking is disabled by default; when enabled, only the user-selected date and enabled flag are stored in local `UserDefaults`. CodexUsage does not read `auth.json`, decode JWT claims, inspect browser cookies, or call private billing endpoints to infer subscription dates.
+
 ## Build Supply Chain
 
 - The repository has no third-party package manager dependency or vendored binary framework.

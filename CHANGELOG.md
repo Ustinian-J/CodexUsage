@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-07-15
+
+- Added official reset-credit monitoring from `rateLimitResetCredits`, including the available reset count and every backend-provided expiry time.
+- Added a dedicated account-cycle dashboard for 5-hour and 7-day reset timestamps, reset-credit details, plan type, and subscription expiry.
+- Added an opt-in, local-only subscription expiry date because the current Codex `account/read` schema does not expose a subscription expiry field.
+- Added a compact reset/subscription summary directly to the menu bar popover.
+- Added parser, persistence, and calendar-day self-tests for reset credits and subscription expiry.
+
 ## 0.1.0 - 2026-07-15
 
 - Created the independent `CodexUsage` macOS app and `com.ustinianj.codexusage` bundle identity.

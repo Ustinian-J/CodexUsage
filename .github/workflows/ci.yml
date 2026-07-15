@@ -63,6 +63,8 @@ jobs:
           "$binary" --self-test-task-progress
           "$binary" --self-test-quota-pace
           "$binary" --self-test-quota-alerts
+          "$binary" --self-test-reset-credits
+          "$binary" --self-test-subscription-expiration
           "$binary" --self-test-particle-animation
           "$binary" --self-test-updates
           ./scripts/test-parsers.sh
