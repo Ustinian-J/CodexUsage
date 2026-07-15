@@ -65,28 +65,38 @@ struct RuntimeStatusMenuView: View {
 
     private var language: WidgetLanguage { settings.language }
     private var displayedScopes: [RuntimeScope] { settings.visibleRuntimeScopes }
+    private var selectedScope: RuntimeScope {
+        RuntimeStatusMenuPolicy.selectedScope(
+            preferred: store.selectedRuntimeScope,
+            visibleScopes: displayedScopes
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            VStack(spacing: 9) {
-                ForEach(displayedScopes) { scope in
-                    RuntimeSummaryCard(
-                        summary: summary(for: scope),
-                        isSelected: store.selectedRuntimeScope == scope,
-                        language: language
-                    ) {
-                        openRuntime(scope)
-                    }
-                }
+            RuntimeSelector(
+                selected: selectedScope,
+                scopes: displayedScopes,
+                language: language
+            ) { scope in
+                store.selectRuntime(scope)
             }
-            totalRow
-            accountCycleRow
+            RuntimeSummaryCard(
+                summary: summary(for: selectedScope),
+                isSelected: true,
+                language: language
+            ) {
+                openRuntime(selectedScope)
+            }
+            if RuntimeStatusMenuPolicy.showsCodexAccountDetails(for: selectedScope) {
+                accountCycleRow
+            }
             AppUpdateMenuRow(updateStore: updateStore, language: language)
             footer
         }
         .padding(14)
-        .frame(width: 380, height: runtimeStatusPopoverHeight(for: displayedScopes.count), alignment: .top)
+        .frame(width: 380, height: runtimeStatusPopoverHeight(for: 1), alignment: .top)
         .readableForegroundHierarchy(colorScheme)
     }
 
@@ -101,7 +111,7 @@ struct RuntimeStatusMenuView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("CodexUsage")
                     .font(.system(size: 14, weight: .semibold))
-                Text("\(language.text("刷新", "Refreshed")) \(runtimeTimeOnly(store.snapshot.refreshedAt))")
+                Text("\(selectedScope.displayName) · \(language.text("刷新", "Refreshed")) \(runtimeTimeOnly(store.snapshot.refreshedAt))")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -119,31 +129,6 @@ struct RuntimeStatusMenuView: View {
         }
     }
 
-    private var totalRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "sum")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            Text(language.text("今日总 token", "Total tokens today"))
-                .font(.system(size: 11, weight: .semibold))
-            Spacer()
-            Text(TokenFormatter.format(store.totalTodayTokens(for: displayedScopes)))
-                .font(.system(size: 13, weight: .bold, design: .rounded))
-                .monospacedDigit()
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(WidgetPalette.controlFill(colorScheme))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(WidgetPalette.controlStroke(colorScheme), lineWidth: 0.8)
-                )
-        )
-    }
-
     private var accountCycleRow: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
@@ -157,17 +142,22 @@ struct RuntimeStatusMenuView: View {
                     value: nextResetExpiry.map(runtimeCompactDateTime) ?? "--"
                 )
             }
-            HStack(spacing: 6) {
-                Image(systemName: "creditcard")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(language.text("订阅到期", "Subscription"))
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Text(subscriptionSummary)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
+            if RuntimeStatusMenuPolicy.showsSubscriptionExpiration(
+                for: selectedScope,
+                isLocallyConfigured: settings.subscriptionExpirationEnabled
+            ) {
+                HStack(spacing: 6) {
+                    Image(systemName: "creditcard")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(language.text("订阅到期", "Subscription"))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(subscriptionSummary)
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                }
             }
         }
         .padding(.horizontal, 10)
@@ -233,7 +223,7 @@ struct RuntimeStatusMenuView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             menuCommandButton(
-                title: language.text("打开主界面", "Open"),
+                title: language.text("打开 \(selectedScope.displayName)", "Open \(selectedScope.displayName)"),
                 systemName: "rectangle.on.rectangle",
                 action: openCurrent
             )

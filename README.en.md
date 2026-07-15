@@ -2,7 +2,7 @@
 
 CodexUsage is a local-first macOS menu bar app. It shows remaining Codex 5-hour and weekly quota as rings, tracks today/7-day/lifetime tokens, and builds a daily task board from local Codex conversations and automations.
 
-> The current version is `0.2.0`. Builds are verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
+> The current version is `0.2.1`. Builds are verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
 
 ## Features
 
@@ -15,6 +15,8 @@ CodexUsage is a local-first macOS menu bar app. It shows remaining Codex 5-hour 
 - Official reset-credit count and per-item expiry from `rateLimitResetCredits.availableCount` and each backend-provided `expiresAt` value.
 - An account-cycle dashboard for 5-hour and 7-day reset times, plan type, reset-credit details, and subscription expiry countdown.
 - Opt-in local subscription-expiry tracking because the current official `account/read` schema does not expose that date; it is never uploaded.
+- The menu bar popover switches directly between Codex and Claude Code and renders only one runtime at a time; Codex reset and account details never appear in the Claude Code view.
+- Subscription expiry is completely omitted until explicitly configured on the local Mac; the app neither queries the web nor infers a date.
 - Usage trends, project rankings, and tool/Skill statistics.
 - Optional local Claude Code statistics without affecting Codex-only use.
 - `Command + U` shows or hides the main window by default.

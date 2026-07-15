@@ -10,6 +10,43 @@ enum StatusItemPresentationSelfTest {
             }
         }
 
+        expect(
+            RuntimeStatusMenuPolicy.selectedScope(
+                preferred: .claudeCode,
+                visibleScopes: [.codex, .claudeCode]
+            ) == .claudeCode,
+            "menu must preserve an available Claude Code selection"
+        )
+        expect(
+            RuntimeStatusMenuPolicy.selectedScope(
+                preferred: .claudeCode,
+                visibleScopes: [.codex]
+            ) == .codex,
+            "menu must fall back to the only visible runtime"
+        )
+        expect(
+            RuntimeStatusMenuPolicy.showsCodexAccountDetails(for: .codex),
+            "Codex menu may show Codex account-cycle details"
+        )
+        expect(
+            !RuntimeStatusMenuPolicy.showsCodexAccountDetails(for: .claudeCode),
+            "Claude Code menu must not show Codex account-cycle details"
+        )
+        expect(
+            !RuntimeStatusMenuPolicy.showsSubscriptionExpiration(
+                for: .codex,
+                isLocallyConfigured: false
+            ),
+            "unconfigured subscription expiry must be omitted"
+        )
+        expect(
+            !RuntimeStatusMenuPolicy.showsSubscriptionExpiration(
+                for: .claudeCode,
+                isLocallyConfigured: true
+            ),
+            "Claude Code menu must never show the Codex subscription expiry"
+        )
+
         expect(TokenFormatter.format(nil) == "--", "missing tokens should remain unavailable")
         expect(TokenFormatter.format(999) == "999", "sub-thousand tokens should remain unabridged")
         expect(TokenFormatter.format(1_000) == "1.0K", "thousands should use K")

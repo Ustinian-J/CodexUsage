@@ -6157,12 +6157,14 @@ struct AccountMonitorPanel: View {
                 value: snapshot.sevenDayQuota?.resetsAt.map { accountDateTime($0, language: language) } ?? "--",
                 detail: language.text("官方 resetsAt", "Official resetsAt")
             )
-            AccountMonitorRow(
-                systemName: "creditcard",
-                title: language.text("订阅到期", "Subscription expiry"),
-                value: subscriptionDateText,
-                detail: subscriptionStatusText
-            )
+            if settings.subscriptionExpirationEnabled {
+                AccountMonitorRow(
+                    systemName: "creditcard",
+                    title: language.text("订阅到期", "Subscription expiry"),
+                    value: subscriptionDateText,
+                    detail: subscriptionStatusText
+                )
+            }
         }
         .padding(dashboardCardPadding)
         .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
@@ -8465,8 +8467,8 @@ private let usageHeatmapMonthLabelHeight: CGFloat = 16
 private let heatmapCellSize: CGFloat = 10
 private let chartTooltipWidth: CGFloat = 188
 
-func runtimeStatusPopoverHeight(for runtimeCount: Int) -> CGFloat {
-    runtimeCount <= 1 ? 412 : 538
+func runtimeStatusPopoverHeight(for _: Int) -> CGFloat {
+    412
 }
 
 private func chartTooltipPosition(anchor: CGPoint, containerSize: CGSize, rowCount: Int) -> CGPoint {

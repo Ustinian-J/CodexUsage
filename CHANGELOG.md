@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-07-15
+
+- Changed the menu bar popover to show exactly one selected runtime at a time, with an explicit Codex / Claude Code selector.
+- Removed the cross-runtime token total from the menu bar popover so Codex and Claude Code remain clearly separated.
+- Restricted reset-credit, account-cycle, and locally configured subscription details to the Codex view.
+- Hidden subscription expiry everywhere until a date is explicitly configured on the local Mac.
+
 ## 0.2.0 - 2026-07-15
 
 - Added official reset-credit monitoring from `rateLimitResetCredits`, including the available reset count and every backend-provided expiry time.

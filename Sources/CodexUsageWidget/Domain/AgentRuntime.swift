@@ -32,6 +32,27 @@ enum RuntimeScope: String, CaseIterable, Identifiable, Codable, Equatable {
     }
 }
 
+enum RuntimeStatusMenuPolicy {
+    static func selectedScope(
+        preferred: RuntimeScope,
+        visibleScopes: [RuntimeScope]
+    ) -> RuntimeScope {
+        if visibleScopes.contains(preferred) { return preferred }
+        return visibleScopes.first ?? .codex
+    }
+
+    static func showsCodexAccountDetails(for scope: RuntimeScope) -> Bool {
+        scope == .codex
+    }
+
+    static func showsSubscriptionExpiration(
+        for scope: RuntimeScope,
+        isLocallyConfigured: Bool
+    ) -> Bool {
+        scope == .codex && isLocallyConfigured
+    }
+}
+
 enum RuntimeMenuStatus: String, Codable, Equatable {
     case available
     case localOnly
