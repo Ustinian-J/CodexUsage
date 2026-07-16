@@ -11,6 +11,12 @@ grep -q '^APP_NAME := CodexUsage$' Makefile
   | grep -qx 'CodexUsage'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' Resources/Info.plist \
   | grep -qx 'CodexUsage'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist \
+  | grep -qx '0.2.3'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist \
+  | grep -qx '5'
+grep -q '当前版本为 `0.2.3`' README.md
+grep -q 'The current version is `0.2.3`' README.en.md
 grep -q 'owner: String = "Ustinian-J"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
 grep -q 'repo: String = "CodexUsage"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
 grep -q 'automaticUpdateChecksEnabled = false' Sources/CodexUsageWidget/main.swift

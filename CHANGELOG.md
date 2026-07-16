@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-07-16
+
+- Replaced the ambiguous runtime-specific open command with “Open Main Window”.
+- Removed version checking from the compact menu bar popover while keeping update controls in Settings.
+- Added a polished account-cycle card with separate 5h and 7d next-reset rows above reset-credit information.
+- Increased the popover height and kept the footer controls on one unclipped row.
+
 ## 0.2.2 - 2026-07-15
 
 - Changed the menu bar default from used quota to remaining quota.
