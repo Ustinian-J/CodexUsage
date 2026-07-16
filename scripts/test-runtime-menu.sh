@@ -11,7 +11,7 @@ require_pattern() {
     local pattern="$1"
     local file="$2"
     local message="$3"
-    if ! rg -q "$pattern" "$file"; then
+    if ! grep -Eq -- "$pattern" "$file"; then
         echo "runtime menu source test failed: $message" >&2
         exit 1
     fi
@@ -23,7 +23,7 @@ require_pattern 'RuntimeResetTimes\(' "$source_file" "reset-time model is not us
 require_pattern 'ForEach\(Array\(resetTimes\.rows\.enumerated\(\)\)' "$source_file" "both ordered reset rows are not rendered"
 require_pattern 'runtimeStatusPopoverHeight\(for _: Int\).*432|return 432' "$main_file" "popover height is not 432 pt"
 
-if rg -q 'AppUpdateMenuRow\(' "$source_file"; then
+if grep -Eq -- 'AppUpdateMenuRow\(' "$source_file"; then
     echo "runtime menu source test failed: popover must not render AppUpdateMenuRow" >&2
     exit 1
 fi
