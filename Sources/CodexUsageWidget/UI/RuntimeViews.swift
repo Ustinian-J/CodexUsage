@@ -57,7 +57,6 @@ struct RuntimeStatusMenuView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
-    @ObservedObject var updateStore: AppUpdateStore
     let openRuntime: (RuntimeScope) -> Void
     let openCurrent: () -> Void
     let openSettings: () -> Void
@@ -90,9 +89,9 @@ struct RuntimeStatusMenuView: View {
                 openRuntime(selectedScope)
             }
             if RuntimeStatusMenuPolicy.showsCodexAccountDetails(for: selectedScope) {
+                quotaResetTimesRow
                 accountCycleRow
             }
-            AppUpdateMenuRow(updateStore: updateStore, language: language)
             footer
         }
         .padding(14)
@@ -172,6 +171,45 @@ struct RuntimeStatusMenuView: View {
         )
     }
 
+    private var quotaResetTimesRow: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(resetTimes.rows.enumerated()), id: \.offset) { index, row in
+                if index > 0 {
+                    Divider()
+                        .padding(.leading, 34)
+                        .padding(.vertical, 5)
+                }
+                HStack(spacing: 8) {
+                    Text(row.window.shortLabel)
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(resetRowTint(row.window))
+                        .frame(width: 26, height: 18)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(resetRowTint(row.window).opacity(0.13))
+                        )
+                    Text(language.text("下次重置", "Next reset"))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text(row.resetsAt.map(runtimeCompactDateTime) ?? "--")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(WidgetPalette.controlFill(colorScheme))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(WidgetPalette.controlStroke(colorScheme), lineWidth: 0.8)
+                )
+        )
+    }
+
     private func compactCycleValue(title: String, value: String) -> some View {
         HStack(spacing: 5) {
             Text(title)
@@ -186,6 +224,22 @@ struct RuntimeStatusMenuView: View {
 
     private var codexSnapshot: UsageSnapshot? {
         store.runtimeSnapshot(for: .codex)?.snapshot
+    }
+
+    private var resetTimes: RuntimeResetTimes {
+        RuntimeResetTimes(
+            fiveHourQuota: codexSnapshot?.fiveHourQuota,
+            sevenDayQuota: codexSnapshot?.sevenDayQuota
+        )
+    }
+
+    private func resetRowTint(_ window: RuntimeResetWindow) -> Color {
+        switch window {
+        case .fiveHour:
+            return WidgetPalette.brandPrimary
+        case .sevenDay:
+            return WidgetPalette.brandSecondary
+        }
     }
 
     private var resetCount: Int? {
@@ -223,7 +277,7 @@ struct RuntimeStatusMenuView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             menuCommandButton(
-                title: language.text("打开 \(selectedScope.displayName)", "Open \(selectedScope.displayName)"),
+                title: language.text("打开主界面", "Open Main Window"),
                 systemName: "rectangle.on.rectangle",
                 action: openCurrent
             )
@@ -245,6 +299,8 @@ struct RuntimeStatusMenuView: View {
             Label(title, systemImage: systemName)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
                 .frame(maxWidth: .infinity, minHeight: 32)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)

@@ -49,6 +49,7 @@ jobs:
           ./scripts/test-macos-compatibility.sh
           ./scripts/test-ci-security.sh
           ./scripts/test-source-security.sh
+          ./scripts/test-runtime-menu.sh
           git diff --check
 
       - name: Build and run self-tests

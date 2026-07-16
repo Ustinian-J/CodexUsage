@@ -8468,7 +8468,7 @@ private let heatmapCellSize: CGFloat = 10
 private let chartTooltipWidth: CGFloat = 188
 
 func runtimeStatusPopoverHeight(for _: Int) -> CGFloat {
-    412
+    return 432
 }
 
 private func chartTooltipPosition(anchor: CGPoint, containerSize: CGSize, rowCount: Int) -> CGPoint {
@@ -9663,7 +9663,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             rootView: RuntimeStatusMenuView(
                 store: store,
                 settings: settings,
-                updateStore: updateStore,
                 openRuntime: { [weak self] scope in
                     self?.openMainWindow(selecting: scope)
                 },
