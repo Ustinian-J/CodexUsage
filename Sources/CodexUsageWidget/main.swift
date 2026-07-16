@@ -10014,6 +10014,10 @@ struct CodexUsageMain {
             exit(CodexRateLimitNormalizerSelfTest.run() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-runtime-reset-times") {
+            exit(RuntimeResetTimesSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-updates") {
             exit(AppUpdateSelfTest.run() ? 0 : 1)
         }

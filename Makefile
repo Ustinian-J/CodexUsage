@@ -35,7 +35,7 @@ else
 CODESIGN_FLAGS := --force --deep --options runtime --timestamp --sign "$(SIGN_IDENTITY)" $(CODESIGN_EXTRA_FLAGS)
 endif
 
-.PHONY: build run probe test-rate-limits test-statistics-time-zone test-task-progress test-quota-pace test-quota-alerts test-reset-monitor test-particle-animation test-macos-compatibility test-ci-security test-source-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package verify clean clean-dist
+.PHONY: build run probe test-rate-limits test-runtime-reset-times test-statistics-time-zone test-task-progress test-quota-pace test-quota-alerts test-reset-monitor test-particle-animation test-macos-compatibility test-ci-security test-source-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package verify clean clean-dist
 
 build:
 	rm -rf "$(APP_DIR)"
@@ -61,6 +61,9 @@ probe: build
 
 test-rate-limits:
 	./scripts/test-rate-limits.sh
+
+test-runtime-reset-times:
+	./scripts/test-runtime-reset-times.sh
 
 test-statistics-time-zone:
 	./scripts/test-statistics-time-zone.sh
