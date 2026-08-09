@@ -107,7 +107,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void UpdateTray(UsageSnapshot snapshot)
     {
-        var animate = snapshot.UnreadCount > 0 && SystemInformation.MenuAnimation && !SystemInformation.HighContrast;
+        var animate = snapshot.UnreadCount > 0
+            && SystemInformation.IsMenuAnimationEnabled
+            && !SystemInformation.HighContrast;
         if (animate && !pulseTimer.Enabled) pulseTimer.Start();
         if (!animate && pulseTimer.Enabled) pulseTimer.Stop();
         if (!animate) attentionBright = true;

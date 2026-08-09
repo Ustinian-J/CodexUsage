@@ -201,9 +201,9 @@ internal sealed class CodexSessionMonitor : IDisposable
 
     private void ParseLine(ReadOnlySpan<byte> line, Cursor cursor, bool appendedLive)
     {
-        if (!line.Contains("session_meta"u8) && !line.Contains("token_count"u8)
-            && !line.Contains("task_started"u8) && !line.Contains("task_complete"u8)
-            && !line.Contains("turn_aborted"u8)) return;
+        if (line.IndexOf("session_meta"u8) < 0 && line.IndexOf("token_count"u8) < 0
+            && line.IndexOf("task_started"u8) < 0 && line.IndexOf("task_complete"u8) < 0
+            && line.IndexOf("turn_aborted"u8) < 0) return;
 
         using var document = JsonDocument.Parse(line.ToArray());
         var root = document.RootElement;

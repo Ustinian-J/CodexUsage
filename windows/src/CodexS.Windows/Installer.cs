@@ -111,7 +111,7 @@ internal static class Installer
     private static void CreateShortcut(string path, string target)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var link = (IShellLinkW)new ShellLink();
+        var link = (IShellLinkW)(object)new ShellLink();
         link.SetPath(target);
         link.SetWorkingDirectory(Path.GetDirectoryName(target)!);
         link.SetDescription("CodexS - Codex Secretary");

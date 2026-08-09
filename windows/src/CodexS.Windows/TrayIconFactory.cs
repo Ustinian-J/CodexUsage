@@ -18,7 +18,7 @@ internal static class TrayIconFactory
         var stateColor = !snapshot.TaskMonitorReady
             ? Color.FromArgb(135, 145, 160)
             : snapshot.Running.Count > 0 ? Color.FromArgb(244, 74, 90) : Color.FromArgb(55, 196, 123);
-        using (var brush = new SolidBrush(stateColor)) graphics.FillEllipse(21, 11, 10, 10, brush);
+        using (var brush = new SolidBrush(stateColor)) graphics.FillEllipse(brush, 21, 11, 10, 10);
         using (var pen = new Pen(Color.White, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
         {
             if (!snapshot.TaskMonitorReady)
