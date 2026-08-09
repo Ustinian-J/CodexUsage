@@ -287,7 +287,7 @@ struct UsageSnapshot: Equatable {
         cloudLifetimeTokens: nil,
         local: nil,
         taskBoard: nil,
-        messages: ["正在读取 CodexUsage 数据"]
+        messages: ["正在读取 CodexS 数据"]
     )
 
     func replacingTaskBoard(_ taskBoard: TaskBoard?) -> UsageSnapshot {
@@ -1113,8 +1113,8 @@ final class CodexUsageReader {
             "method": "initialize",
             "params": [
                 "clientInfo": [
-                    "name": "codexusage",
-                    "title": "CodexUsage",
+                    "name": "codexs",
+                    "title": "CodexS",
                     "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.1"
                 ],
                 "capabilities": [
@@ -2307,30 +2307,12 @@ final class CodexUsageReader {
     }
 
     private func runSQLiteJSON(sqlitePath: String, dbPath: String, query: String) -> [[String: Any]] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: sqlitePath)
-        process.arguments = ["-readonly", "-json", dbPath, query]
-
-        let output = Pipe()
-        let error = Pipe()
-        process.standardOutput = output
-        process.standardError = error
-
-        do {
-            try process.run()
-        } catch {
+        switch runReadOnlySQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: query) {
+        case let .success(rows):
+            return rows
+        case .failure:
             return []
         }
-
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard
-            process.terminationStatus == 0,
-            let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        else { return [] }
-
-        return json
     }
 
     private func resolveCodexExecutablePath() -> String? {
@@ -2924,6 +2906,7 @@ final class AppSettings: ObservableObject {
     private static let visibleRuntimeScopesKey = "CodexUsage.visibleRuntimeScopes"
     private static let automaticUpdateChecksEnabledKey = "CodexUsage.update.autoCheckEnabled"
     private static let quotaAlertsEnabledKey = "CodexUsage.quotaAlerts.enabled"
+    private static let taskCompletionAlertsEnabledKey = "CodexUsage.taskCompletionAlerts.enabled"
     private static let subscriptionExpirationEnabledKey = "CodexUsage.subscriptionExpiration.enabled"
     private static let subscriptionExpirationDateKey = "CodexUsage.subscriptionExpiration.date"
     private static let skippedUpdateVersionKey = "CodexUsage.update.skippedVersion"
@@ -2970,6 +2953,12 @@ final class AppSettings: ObservableObject {
     @Published var quotaAlertsEnabled: Bool {
         didSet {
             defaults.set(quotaAlertsEnabled, forKey: Self.quotaAlertsEnabledKey)
+        }
+    }
+
+    @Published var taskCompletionAlertsEnabled: Bool {
+        didSet {
+            defaults.set(taskCompletionAlertsEnabled, forKey: Self.taskCompletionAlertsEnabledKey)
         }
     }
 
@@ -3027,6 +3016,11 @@ final class AppSettings: ObservableObject {
             quotaAlertsEnabled = false
         } else {
             quotaAlertsEnabled = defaults.bool(forKey: Self.quotaAlertsEnabledKey)
+        }
+        if defaults.object(forKey: Self.taskCompletionAlertsEnabledKey) == nil {
+            taskCompletionAlertsEnabled = true
+        } else {
+            taskCompletionAlertsEnabled = defaults.bool(forKey: Self.taskCompletionAlertsEnabledKey)
         }
         if defaults.object(forKey: Self.subscriptionExpirationEnabledKey) == nil {
             subscriptionExpirationEnabled = false
@@ -3540,7 +3534,7 @@ struct UsageWidgetView: View {
     }
 
     private var shouldShowEnvironmentChecklist: Bool {
-        if snapshot.messages.contains("正在读取 CodexUsage 数据") { return false }
+        if snapshot.messages.contains("正在读取 CodexS 数据") { return false }
         let quotaUnavailable = snapshot.fiveHourQuota == nil && snapshot.sevenDayQuota == nil
         let hasQuotaProtocolWarning = snapshot.messages.contains { $0.contains("额度窗口") }
         return (!snapshot.messages.isEmpty && (quotaUnavailable || hasQuotaProtocolWarning || snapshot.local == nil))
@@ -3851,6 +3845,7 @@ struct TitlebarToolbarView: View {
 struct SettingsPanelView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
+    @ObservedObject var taskActivityStore: CodexTaskActivityStore
     @ObservedObject var updateStore: AppUpdateStore
     @Environment(\.colorScheme) private var colorScheme
 
@@ -3974,7 +3969,11 @@ struct SettingsPanelView: View {
                     title: language.text("状态栏", "Menu Bar"),
                     detail: language.text("内容与显示密度", "Content and density")
                 ) {
-                    StatusItemSettingsView(settings: settings, store: store)
+                    StatusItemSettingsView(
+                        settings: settings,
+                        store: store,
+                        taskActivityStore: taskActivityStore
+                    )
                 }
 
                 settingsSection(
@@ -4075,6 +4074,15 @@ struct SettingsPanelView: View {
                         }
                     }
                     SettingsToggleRow(
+                        title: language.text("任务完成本地提醒", "Task completion alerts"),
+                        detail: language.text(
+                            "Codex 任务完成或中断时提醒；内容不包含对话正文，默认开启",
+                            "Alerts when Codex tasks finish or stop; message content is excluded; on by default"
+                        )
+                    ) {
+                        SettingsSwitchToggle(isOn: $settings.taskCompletionAlertsEnabled)
+                    }
+                    SettingsToggleRow(
                         title: language.text("低额度本地提醒", "Low-quota local alerts"),
                         detail: language.text(
                             "剩余 20%、10%、5% 时提醒；每个重置周期各一次，默认关闭",
@@ -4148,7 +4156,7 @@ struct SettingsPanelView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(language.text("设置", "Settings"))
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
-                Text("CodexUsage")
+                Text("CodexS")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -8468,7 +8476,7 @@ private let heatmapCellSize: CGFloat = 10
 private let chartTooltipWidth: CGFloat = 188
 
 func runtimeStatusPopoverHeight(for _: Int) -> CGFloat {
-    return 432
+    return 570
 }
 
 private func chartTooltipPosition(anchor: CGPoint, containerSize: CGSize, rowCount: Int) -> CGPoint {
@@ -8838,7 +8846,7 @@ private func localizedTaskDetail(_ detail: String, language: WidgetLanguage) -> 
 
 private func localizedReaderMessage(_ message: String, language: WidgetLanguage) -> String {
     guard !language.isChinese else { return message }
-    if message == "正在读取 CodexUsage 数据" { return "Reading CodexUsage data" }
+    if message == "正在读取 CodexS 数据" { return "Reading CodexS data" }
     if message.contains("未找到 codex") { return "Codex executable not found" }
     if message.contains("app-server 启动失败") { return "Failed to start app-server" }
     if message.contains("app-server 响应超时") { return "app-server response timed out" }
@@ -9224,7 +9232,7 @@ final class MainAppWindow: NSWindow {
             backing: .buffered,
             defer: false
         )
-        title = "CodexUsage"
+        title = "CodexS"
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
         isReleasedWhenClosed = false
@@ -9239,9 +9247,11 @@ final class MainAppWindow: NSWindow {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     private let store = UsageStore()
+    private let taskActivityStore = CodexTaskActivityStore()
     private let settings = AppSettings()
     private lazy var updateStore = AppUpdateStore(settings: settings)
     private let quotaAlertService = QuotaAlertService()
+    private let taskCompletionAlertService = TaskCompletionAlertService()
     private var window: MainAppWindow?
     private var settingsWindow: NSWindow?
     private var titlebarToolbarController: NSTitlebarAccessoryViewController?
@@ -9250,6 +9260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var statusPopoverEventMonitors: [Any] = []
     private var statusItemAppearanceObservation: NSKeyValueObservation?
     private var activeSpaceObserver: NSObjectProtocol?
+    private var accessibilityDisplayObserver: NSObjectProtocol?
     private var globalHotKeyRef: EventHotKeyRef?
     private var globalHotKeyHandler: EventHandlerRef?
     private var cancellables = Set<AnyCancellable>()
@@ -9257,6 +9268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let statusItemRenderer = StatusItemRenderer()
     private var lastRenderedStatusItemPresentation: StatusItemPresentation?
     private var lastRenderedStatusItemAppearanceName: NSAppearance.Name?
+    private var taskIndicatorPulseTimer: Timer?
+    private var taskIndicatorYellowIsBright = true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -9272,9 +9285,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         ) { [weak self] _ in
             self?.updateTaskBoardPollingActivity()
         }
+        accessibilityDisplayObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateTaskIndicatorPulse()
+        }
         setupStatusItemIfNeeded()
         observeStatusItemUsage()
         observeSettings()
+        taskActivityStore.onNewCompletion = { [weak self] completion in
+            guard let self else { return }
+            self.taskCompletionAlertService.send(
+                completion,
+                enabled: self.settings.taskCompletionAlertsEnabled,
+                language: self.settings.language
+            )
+        }
         settings.globalShortcutRegistration = { [weak self] shortcut in
             self?.replaceGlobalHotKey(with: shortcut) ?? .failure(.failed)
         }
@@ -9291,6 +9319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             _ = installGlobalHotKeyHandler()
         }
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
+        taskActivityStore.start()
         store.start()
         updateStore.startAutomaticCheck()
     }
@@ -9345,12 +9374,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func applicationWillTerminate(_ notification: Notification) {
         closeStatusPopover()
+        taskIndicatorPulseTimer?.invalidate()
+        taskIndicatorPulseTimer = nil
         statusItemAppearanceObservation = nil
         if let activeSpaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(activeSpaceObserver)
             self.activeSpaceObserver = nil
         }
+        if let accessibilityDisplayObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityDisplayObserver)
+            self.accessibilityDisplayObserver = nil
+        }
         unregisterGlobalHotKey()
+        taskActivityStore.stop()
         store.stop()
     }
 
@@ -9468,10 +9504,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
 
-        let appMenu = NSMenu(title: "CodexUsage")
+        let appMenu = NSMenu(title: "CodexS")
         appMenuItem.submenu = appMenu
         appMenu.addItem(NSMenuItem(
-            title: language.text("关于 CodexUsage", "About CodexUsage"),
+            title: language.text("关于 CodexS", "About CodexS"),
             action: #selector(showAboutPanel),
             keyEquivalent: ""
         ))
@@ -9484,7 +9520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(.separator())
 
         let hideItem = NSMenuItem(
-            title: language.text("隐藏 CodexUsage", "Hide CodexUsage"),
+            title: language.text("隐藏 CodexS", "Hide CodexS"),
             action: #selector(NSApplication.hide(_:)),
             keyEquivalent: "h"
         )
@@ -9509,7 +9545,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(showAllItem)
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(
-            title: language.text("退出 CodexUsage", "Quit CodexUsage"),
+            title: language.text("退出 CodexS", "Quit CodexS"),
             action: #selector(quitFromMenu),
             keyEquivalent: "q"
         ))
@@ -9550,7 +9586,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             settingsWindow.isReleasedWhenClosed = false
             settingsWindow.delegate = self
             settingsWindow.contentView = NSHostingView(
-                rootView: SettingsPanelView(settings: settings, store: store, updateStore: updateStore)
+                rootView: SettingsPanelView(
+                    settings: settings,
+                    store: store,
+                    taskActivityStore: taskActivityStore,
+                    updateStore: updateStore
+                )
             )
             settingsWindow.center()
             self.settingsWindow = settingsWindow
@@ -9624,6 +9665,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
             .store(in: &cancellables)
 
+        settings.$taskCompletionAlertsEnabled
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.taskCompletionAlertService.updateAuthorization(enabled: enabled)
+            }
+            .store(in: &cancellables)
+
         store.$multiRuntimeSnapshot
             .receive(on: RunLoop.main)
             .sink { [weak self] multiRuntimeSnapshot in
@@ -9663,11 +9712,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             rootView: RuntimeStatusMenuView(
                 store: store,
                 settings: settings,
+                taskActivityStore: taskActivityStore,
                 openRuntime: { [weak self] scope in
                     self?.openMainWindow(selecting: scope)
                 },
                 openCurrent: { [weak self] in
-                    self?.openMainWindow(selecting: nil)
+                    self?.openMainWindow(selecting: .codex)
                 },
                 openSettings: { [weak self] in
                     self?.openSettingsWindow()
@@ -9816,6 +9866,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 self?.updateStatusItem()
             }
             .store(in: &cancellables)
+
+        taskActivityStore.$snapshot
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.updateTaskIndicatorPulse()
+                self?.updateStatusItem()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func updateTaskIndicatorPulse() {
+        let shouldAnimate = taskActivityStore.snapshot.unreadCount > 0
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard shouldAnimate else {
+            taskIndicatorPulseTimer?.invalidate()
+            taskIndicatorPulseTimer = nil
+            let needsRedraw = !taskIndicatorYellowIsBright
+            taskIndicatorYellowIsBright = true
+            if needsRedraw {
+                updateStatusItem()
+            }
+            return
+        }
+        guard taskIndicatorPulseTimer == nil else { return }
+
+        taskIndicatorYellowIsBright = true
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.taskIndicatorYellowIsBright.toggle()
+            self.updateStatusItem()
+        }
+        timer.tolerance = 0.12
+        taskIndicatorPulseTimer = timer
     }
 
     private func updateStatusItem() {
@@ -9840,7 +9923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             appearance: appearance
         )
         button.toolTip = presentation.tooltip
-        button.setAccessibilityLabel("CodexUsage")
+        button.setAccessibilityLabel("CodexS")
         button.setAccessibilityValue(presentation.accessibilityValue)
     }
 
@@ -9855,7 +9938,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             source: source,
             preferences: settings.statusItemPreferences,
             language: settings.language,
-            shortcutName: settings.globalShortcut?.displayName
+            shortcutName: settings.globalShortcut?.displayName,
+            taskActivity: taskActivityStore.snapshot,
+            yellowIsBright: taskIndicatorYellowIsBright
         )
     }
 
@@ -9988,7 +10073,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 }
 
 @main
-struct CodexUsageMain {
+struct CodexSMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test-global-shortcut") {
             exit(GlobalShortcutSelfTest.run() ? 0 : 1)
@@ -10027,6 +10112,10 @@ struct CodexUsageMain {
 
         if CommandLine.arguments.contains("--self-test-task-progress") {
             exit(TaskProgressSelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-task-activity") {
+            exit(CodexTaskActivitySelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-quota-pace") {

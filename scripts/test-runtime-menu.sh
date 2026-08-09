@@ -21,7 +21,8 @@ require_pattern 'language\.text\("打开主界面", "Open Main Window"\)' "$sour
 require_pattern 'private var quotaResetTimesRow' "$source_file" "reset-time card is missing"
 require_pattern 'RuntimeResetTimes\(' "$source_file" "reset-time model is not used"
 require_pattern 'ForEach\(Array\(resetTimes\.rows\.enumerated\(\)\)' "$source_file" "both ordered reset rows are not rendered"
-require_pattern 'runtimeStatusPopoverHeight\(for _: Int\).*432|return 432' "$main_file" "popover height is not 432 pt"
+require_pattern 'runtimeStatusPopoverHeight\(for _: Int\).*570|return 570' "$main_file" "popover height is not 570 pt"
+require_pattern 'TaskActivityCard\(' "$source_file" "task activity card is missing"
 
 if grep -Eq -- 'AppUpdateMenuRow\(' "$source_file"; then
     echo "runtime menu source test failed: popover must not render AppUpdateMenuRow" >&2

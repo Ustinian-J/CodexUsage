@@ -82,8 +82,73 @@ struct StatusItemRenderer {
         case .rich:
             drawRich(presentation)
         }
+        drawTaskIndicator(presentation.taskIndicator, in: presentation.imageSize)
 
         return image
+    }
+
+    private func drawTaskIndicator(
+        _ indicator: StatusItemTaskIndicatorPresentation,
+        in imageSize: NSSize
+    ) {
+        let regionX = imageSize.width - StatusItemLayoutMetrics.taskIndicatorWidth
+        NSColor.separatorColor.withAlphaComponent(0.34).setFill()
+        NSBezierPath(rect: NSRect(x: regionX + 0.5, y: 4, width: 1, height: 14)).fill()
+
+        let stateRect = NSRect(x: regionX + 3.5, y: 5.5, width: 10.5, height: 10.5)
+        if !indicator.monitorIsReady {
+            NSColor.secondaryLabelColor.withAlphaComponent(0.62).setStroke()
+            let outline = NSBezierPath(ovalIn: stateRect.insetBy(dx: 0.6, dy: 0.6))
+            outline.lineWidth = 1.2
+            outline.stroke()
+            NSColor.secondaryLabelColor.withAlphaComponent(0.68).setStroke()
+            let dash = NSBezierPath()
+            dash.move(to: NSPoint(x: stateRect.minX + 3, y: stateRect.midY))
+            dash.line(to: NSPoint(x: stateRect.maxX - 3, y: stateRect.midY))
+            dash.lineWidth = 1.2
+            dash.stroke()
+        } else if indicator.showsRed {
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: stateRect).fill()
+            NSColor.white.withAlphaComponent(0.94).setFill()
+            let play = NSBezierPath()
+            play.move(to: NSPoint(x: stateRect.minX + 4.1, y: stateRect.minY + 3))
+            play.line(to: NSPoint(x: stateRect.maxX - 2.8, y: stateRect.midY))
+            play.line(to: NSPoint(x: stateRect.minX + 4.1, y: stateRect.maxY - 3))
+            play.close()
+            play.fill()
+        } else {
+            NSColor.systemGreen.setFill()
+            NSBezierPath(ovalIn: stateRect).fill()
+            NSColor.white.withAlphaComponent(0.96).setStroke()
+            let check = NSBezierPath()
+            check.move(to: NSPoint(x: stateRect.minX + 2.7, y: stateRect.midY))
+            check.line(to: NSPoint(x: stateRect.minX + 4.6, y: stateRect.minY + 3.1))
+            check.line(to: NSPoint(x: stateRect.maxX - 2.4, y: stateRect.maxY - 3))
+            check.lineWidth = 1.25
+            check.lineCapStyle = .round
+            check.lineJoinStyle = .round
+            check.stroke()
+        }
+
+        if indicator.showsYellow {
+            let center = NSPoint(x: regionX + 13.2, y: 15.7)
+            func diamond(radius: CGFloat) -> NSBezierPath {
+                let path = NSBezierPath()
+                path.move(to: NSPoint(x: center.x, y: center.y + radius))
+                path.line(to: NSPoint(x: center.x + radius, y: center.y))
+                path.line(to: NSPoint(x: center.x, y: center.y - radius))
+                path.line(to: NSPoint(x: center.x - radius, y: center.y))
+                path.close()
+                return path
+            }
+            let badge = diamond(radius: 3)
+            let alpha: CGFloat = indicator.yellowIsBright ? 1 : 0.38
+            NSColor.systemYellow.withAlphaComponent(alpha * 0.24).setFill()
+            diamond(radius: 4.1).fill()
+            NSColor.systemYellow.withAlphaComponent(alpha).setFill()
+            badge.fill()
+        }
     }
 
     private func drawMinimal(_ presentation: StatusItemPresentation) {

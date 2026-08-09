@@ -1,0 +1,10 @@
+{
+  "version": 0,
+  "roots": [
+    {
+      "type": "file",
+      "name": "/Library/Developer/CommandLineTools/usr/include/swift/module.modulemap",
+      "external-contents": "/dev/null"
+    }
+  ]
+}

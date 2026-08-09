@@ -1,0 +1,46 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    name: Test and package Windows x64 app
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      # Pinned to the verified actions/checkout v4.3.1 commit.
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      # Pinned to the verified actions/setup-dotnet v5.4.0 commit.
+      - name: Set up audited .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        with:
+          global-json-file: windows/global.json
+
+      - name: Audit Windows source
+        shell: pwsh
+        run: ./windows/scripts/test-security.ps1
+
+      - name: Build, test, and hash installer
+        shell: pwsh
+        run: ./windows/scripts/build.ps1
+
+      # Pinned to the verified actions/upload-artifact v4.6.2 commit.
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CodexS-windows-x64
+          path: |
+            dist/CodexS-0.3.0-windows-x64.exe
+            dist/CodexS-0.3.0-windows-x64.exe.sha256
+          if-no-files-found: error
+          retention-days: 7

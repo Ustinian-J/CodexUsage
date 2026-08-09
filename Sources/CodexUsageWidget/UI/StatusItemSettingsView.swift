@@ -7,6 +7,7 @@ private let statusItemSettingsCornerRadius: CGFloat = 8
 struct StatusItemSettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
+    @ObservedObject var taskActivityStore: CodexTaskActivityStore
     @State private var preferenceError: StatusItemPreferenceError?
 
     private var language: WidgetLanguage { settings.language }
@@ -15,7 +16,8 @@ struct StatusItemSettingsView: View {
     var body: some View {
         StatusItemPreviewRow(
             settings: settings,
-            store: store
+            store: store,
+            taskActivityStore: taskActivityStore
         )
 
         SettingsPickerRow(
@@ -168,6 +170,7 @@ struct StatusItemSettingsView: View {
 private struct StatusItemPreviewRow: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
+    @ObservedObject var taskActivityStore: CodexTaskActivityStore
     @Environment(\.colorScheme) private var colorScheme
 
     private let builder = StatusItemPresentationBuilder()
@@ -189,7 +192,7 @@ private struct StatusItemPreviewRow: View {
                     )
             }
             .frame(width: statusItemSettingsAccessoryWidth, height: 38)
-            .accessibilityLabel("CodexUsage")
+            .accessibilityLabel("CodexS")
             .accessibilityValue(presentation.accessibilityValue)
         }
     }
@@ -205,7 +208,8 @@ private struct StatusItemPreviewRow: View {
         builder.build(
             source: source,
             preferences: settings.statusItemPreferences,
-            language: settings.language
+            language: settings.language,
+            taskActivity: taskActivityStore.snapshot
         )
     }
 
