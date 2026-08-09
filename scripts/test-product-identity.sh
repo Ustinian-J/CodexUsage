@@ -18,7 +18,7 @@ grep -q '^APP_NAME := CodexS$' Makefile
 grep -q '当前版本为 `0.3.0`' README.md
 grep -q 'The current version is `0.3.0`' README.en.md
 grep -q 'owner: String = "Ustinian-J"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
-grep -q 'repo: String = "CodexS"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
+grep -q 'repo: String = "CodexUsage"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
 grep -q 'automaticUpdateChecksEnabled = false' Sources/CodexUsageWidget/main.swift
 grep -q '"CodexUsage.taskActivity.v1"' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift
 grep -q 'Library/Caches/CodexUsage' Sources/CodexUsageWidget/Providers/RuntimeProvider.swift
