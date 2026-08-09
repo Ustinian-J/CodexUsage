@@ -71,7 +71,7 @@ grep -Fq 'process.arguments = ["app-server"]' Sources/CodexUsageWidget/main.swif
   || fail "reviewed Codex app-server launch changed"
 grep -Fq 'let grepPath = "/usr/bin/grep"' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed grep launch changed"
-grep -Fq 'process.arguments = ["-readonly", "-json", dbPath, query]' Sources/CodexUsageWidget/main.swift \
+grep -Fq 'process.arguments = ["-readonly", "-json", dbPath, query]' Sources/CodexUsageWidget/Services/ReadOnlySQLite.swift \
   || fail "reviewed read-only SQLite launch changed"
 grep -Fq 'helper.executableURL = executableURL' Sources/CodexUsageWidget/Domain/GlobalShortcutSelfTest.swift \
   || fail "reviewed self-test helper launch changed"

@@ -11,32 +11,35 @@ Please report security issues privately instead of opening a public issue when t
 Include:
 
 - macOS version.
-- CodexUsage version.
+- CodexS version.
 - Whether the issue affects app launch, local file reads, quota reads, packaging, or update distribution.
 - Minimal reproduction steps without private Codex data.
 
 ## Local Data Scope
 
-CodexUsage reads:
+CodexS reads:
 
 - `~/.codex/state_5.sqlite`
 - `~/.codex/automations/**/automation.toml`
 - local responses from `codex app-server`
-- `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/archived_sessions/*.jsonl` token metadata
+- `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/archived_sessions/*.jsonl` token/tool metadata
+- `task_started`, `task_complete`, and `turn_aborted` event fields from current Codex rollout files
 - `~/.claude/projects/**/*.jsonl` assistant `message.usage` and `tool_use.name` metadata
 - `~/.claude/tasks/**/*.json` task status/title metadata
 - optional `~/Library/Caches/CodexUsage/claude-code/statusline-snapshot.json`
 - optional `~/Library/Caches/CodexUsage/update-check.json` for cached GitHub Release update metadata
 
+Task activity persistence uses the legacy-compatible `CodexUsage.taskActivity.v1` local `UserDefaults` key and stores only task IDs, thread titles, project basenames, outcomes, timestamps, read state, and a recovery watermark. It deliberately ignores and never persists or exposes `last_agent_message`. CodexS keeps the existing `com.ustinianj.codexusage` bundle ID and `~/Library/Caches/CodexUsage/` cache namespace so an upgrade does not lose settings or repeat alerts.
+
 It should not upload local usage, transcript, task, thread, account, or path data to a third-party service. Claude Code transcript parsing must not store prompt text, assistant response text, tool arguments, or tool output.
 
 ## Network Scope
 
-CodexUsage is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexUsage/releases` during automatic checks when enabled or when the user manually checks for updates.
+CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexS/releases` during automatic checks when enabled or when the user manually checks for updates.
 
 Update requests must not include local usage, transcript, task, thread, account, path, prompt, response, tool argument, or tool output data. The update checker may send standard HTTPS headers such as `User-Agent` and `If-None-Match` for ETag caching.
 
-CodexUsage must not silently download, install, replace, or relaunch the app as part of the GitHub Release check. It may open the user's default browser to a matching DMG asset or the Release page.
+CodexS must not silently download, install, replace, or relaunch the app as part of the GitHub Release check. It may open the user's default browser to a matching DMG asset or the Release page.
 
 Automatic update checks are disabled by default. Enabling them is an explicit user setting.
 
@@ -44,7 +47,9 @@ Automatic update checks are disabled by default. Enabling them is an explicit us
 
 Quota alerts are disabled by default. Enabling them explicitly requests macOS notification permission. Alert state stores only the quota window kind, reset timestamp, and thresholds already emitted. Notification content contains only the window label, remaining percentage, and reset time; it must not contain account, thread, prompt, task, path, token credential, or transcript data.
 
-Reset-credit details are read only from the official local Codex app-server response and are not persisted outside the current in-memory snapshot. Subscription expiry tracking is disabled by default; when enabled, only the user-selected date and enabled flag are stored in local `UserDefaults`. CodexUsage does not read `auth.json`, decode JWT claims, inspect browser cookies, or call private billing endpoints to infer subscription dates.
+Task-completion alerts are enabled by default for this feature and use the same native notification permission. Their title contains only “completed” or “interrupted,” and their body only asks the user to open CodexS. Thread titles, project names, paths, prompts, responses, and tool data must not appear in notification content.
+
+Reset-credit details are read only from the official local Codex app-server response and are not persisted outside the current in-memory snapshot. Subscription expiry tracking is disabled by default; when enabled, only the user-selected date and enabled flag are stored in local `UserDefaults`. CodexS does not read `auth.json`, decode JWT claims, inspect browser cookies, or call private billing endpoints to infer subscription dates.
 
 ## Build Supply Chain
 

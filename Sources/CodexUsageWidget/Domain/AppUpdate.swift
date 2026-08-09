@@ -223,7 +223,7 @@ struct GitHubReleaseInfo: Codable, Equatable, Identifiable {
         let expectedVersion = version?.description.lowercased()
         return matching.first { asset in
             let normalized = asset.name.lowercased()
-            return normalized.contains("codexusage")
+            return (normalized.contains("codexs") || normalized.contains("codexusage"))
                 && expectedVersion.map { normalized.contains($0) } ?? true
         } ?? matching.first
     }
@@ -301,23 +301,23 @@ enum AppUpdateSelfTest {
         expect(beta01 < beta02, "beta01 should be lower than beta02")
         expect(beta02 < stable, "stable should be higher than beta")
         expect(stable < nextPatch, "next patch should be higher than current stable")
-        expect(AppArchitecture(assetName: "CodexUsage-1.0.0-mac-arm64.dmg") == .arm64, "arm64 asset detection")
-        expect(AppArchitecture(assetName: "CodexUsage-1.0.0-mac-x86_64.dmg") == .x86_64, "x86_64 asset detection")
+        expect(AppArchitecture(assetName: "CodexS-1.0.0-mac-arm64.dmg") == .arm64, "arm64 asset detection")
+        expect(AppArchitecture(assetName: "CodexS-1.0.0-mac-x86_64.dmg") == .x86_64, "x86_64 asset detection")
 
         let fixture = """
         [
           {
             "tag_name": "v1.0.0-beta03",
-            "name": "CodexUsage v1.0.0-beta03",
-            "html_url": "https://github.com/Ustinian-J/CodexUsage/releases/tag/v1.0.0-beta03",
+            "name": "CodexS v1.0.0-beta03",
+            "html_url": "https://github.com/Ustinian-J/CodexS/releases/tag/v1.0.0-beta03",
             "published_at": "2026-07-09T12:00:00Z",
             "prerelease": true,
             "draft": false,
             "body": "Beta update",
             "assets": [
               {
-                "name": "CodexUsage-1.0.0-beta03-mac-arm64.dmg",
-                "browser_download_url": "https://github.com/Ustinian-J/CodexUsage/releases/download/v1.0.0-beta03/CodexUsage-1.0.0-beta03-mac-arm64.dmg",
+                "name": "CodexS-1.0.0-beta03-mac-arm64.dmg",
+                "browser_download_url": "https://github.com/Ustinian-J/CodexS/releases/download/v1.0.0-beta03/CodexS-1.0.0-beta03-mac-arm64.dmg",
                 "size": 1234,
                 "content_type": "application/octet-stream"
               }

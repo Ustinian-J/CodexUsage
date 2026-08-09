@@ -17,14 +17,15 @@ git diff --check
 
 make test-macos-compatibility
 make build >/dev/null
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-statistics-time-zone
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-status-item
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-rate-limits
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-task-progress
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-quota-pace
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-quota-alerts
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-particle-animation
-build/CodexUsage.app/Contents/MacOS/CodexUsage --self-test-updates
+build/CodexS.app/Contents/MacOS/CodexS --self-test-statistics-time-zone
+build/CodexS.app/Contents/MacOS/CodexS --self-test-status-item
+build/CodexS.app/Contents/MacOS/CodexS --self-test-rate-limits
+build/CodexS.app/Contents/MacOS/CodexS --self-test-task-progress
+build/CodexS.app/Contents/MacOS/CodexS --self-test-task-activity
+build/CodexS.app/Contents/MacOS/CodexS --self-test-quota-pace
+build/CodexS.app/Contents/MacOS/CodexS --self-test-quota-alerts
+build/CodexS.app/Contents/MacOS/CodexS --self-test-particle-animation
+build/CodexS.app/Contents/MacOS/CodexS --self-test-updates
 ./scripts/test-parsers.sh
 
 make release-all
@@ -32,7 +33,7 @@ make release-all
 verify_asset() {
   local arch="$1"
   local expected_arch="$2"
-  local dmg="dist/CodexUsage-${VERSION}-mac-${arch}.dmg"
+  local dmg="dist/CodexS-${VERSION}-mac-${arch}.dmg"
   local checksum="${dmg}.sha256"
   local mount_dir
 
@@ -43,8 +44,8 @@ verify_asset() {
 
   mount_dir="$(mktemp -d)"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg" >/dev/null
-  file "$mount_dir/CodexUsage.app/Contents/MacOS/CodexUsage" | grep -q "$expected_arch"
-  codesign --verify --deep --strict "$mount_dir/CodexUsage.app"
+  file "$mount_dir/CodexS.app/Contents/MacOS/CodexS" | grep -q "$expected_arch"
+  codesign --verify --deep --strict "$mount_dir/CodexS.app"
   hdiutil detach "$mount_dir" >/dev/null
   rmdir "$mount_dir"
 }
@@ -52,6 +53,6 @@ verify_asset() {
 verify_asset arm64 arm64
 verify_asset x86_64 x86_64
 
-echo "Release artifacts verified for CodexUsage $VERSION"
-cat "dist/CodexUsage-${VERSION}-mac-arm64.dmg.sha256"
-cat "dist/CodexUsage-${VERSION}-mac-x86_64.dmg.sha256"
+echo "Release artifacts verified for CodexS $VERSION"
+cat "dist/CodexS-${VERSION}-mac-arm64.dmg.sha256"
+cat "dist/CodexS-${VERSION}-mac-x86_64.dmg.sha256"

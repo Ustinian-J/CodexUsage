@@ -1,4 +1,7 @@
 .worktrees/
 build/
 dist/
+windows/artifacts/
+windows/**/bin/
+windows/**/obj/
 .DS_Store

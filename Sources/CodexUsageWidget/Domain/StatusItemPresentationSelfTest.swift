@@ -130,6 +130,45 @@ enum StatusItemPresentationSelfTest {
             "battery semantics must keep compact labels without extra wording"
         )
 
+        let activeTaskSnapshot = CodexTaskActivitySnapshot(
+            availability: .ready,
+            runningTasks: [
+                CodexRunningTask(
+                    id: "turn-running",
+                    turnID: "turn-running",
+                    threadID: "thread-running",
+                    title: "Running task",
+                    projectName: "CodexS",
+                    startedAt: now
+                )
+            ],
+            recentCompletions: [
+                CodexTaskCompletion(
+                    id: "turn-complete",
+                    turnID: "turn-complete",
+                    threadID: "thread-complete",
+                    title: "Completed task",
+                    projectName: "CodexS",
+                    completedAt: now,
+                    outcome: .completed,
+                    readAt: nil
+                )
+            ]
+        )
+        let activeTaskPresentation = builder.build(
+            source: source,
+            preferences: .default,
+            language: .zh,
+            taskActivity: activeTaskSnapshot,
+            yellowIsBright: false,
+            now: now
+        )
+        expect(activeTaskPresentation.taskIndicator.showsRed, "running task must light the red signal")
+        expect(activeTaskPresentation.taskIndicator.showsYellow, "unread completion must light the yellow signal")
+        expect(!activeTaskPresentation.taskIndicator.showsGreen, "running task must turn off the green signal")
+        expect(!activeTaskPresentation.taskIndicator.yellowIsBright, "yellow pulse phase must enter the presentation model")
+        expect(activeTaskPresentation.accessibilityValue.contains("1 个任务执行中"), "task counts must be exposed to VoiceOver")
+
         var usedPreferences = StatusItemPreferences.default
         usedPreferences.quotaMode = .used
         usedPreferences.visibleMetrics.insert(.todayTokens)
@@ -271,7 +310,7 @@ enum StatusItemPresentationSelfTest {
         var minimalPreferences = StatusItemPreferences.default
         minimalPreferences.displayMode = .minimal
         let minimal = builder.build(source: source, preferences: minimalPreferences, language: .en, now: now)
-        expect(minimal.itemLength <= 36, "minimal double-ring item should stay within 36pt")
+        expect(minimal.itemLength <= 53, "minimal double-ring item with task badge should stay within 53pt")
         let minimalOuterRingRect = StatusItemLayoutMetrics.minimalOuterRingRect
         let minimalInnerRingRect = StatusItemLayoutMetrics.minimalInnerRingRect
         expect(
@@ -290,7 +329,11 @@ enum StatusItemPresentationSelfTest {
         let renderer = StatusItemRenderer()
         let minimalImage = renderer.render(minimal, appearance: NSAppearance(named: .aqua))
         if let bitmap = minimalImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-           let center = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2) {
+           let center = bitmap.colorAt(
+               x: Int((StatusItemLayoutMetrics.minimalImageWidth / minimalImage.size.width)
+                   * CGFloat(bitmap.pixelsWide) / 2),
+               y: bitmap.pixelsHigh / 2
+           ) {
             let edgeAlpha = (0...min(2, bitmap.pixelsWide - 1))
                 .compactMap { bitmap.colorAt(x: $0, y: bitmap.pixelsHigh / 2)?.alphaComponent }
                 .max() ?? 0
@@ -331,7 +374,7 @@ enum StatusItemPresentationSelfTest {
         var classicPreferences = StatusItemPreferences.default
         classicPreferences.displayMode = .classic
         let classic = builder.build(source: source, preferences: classicPreferences, language: .en, now: now)
-        expect(classic.itemLength <= 88, "classic double-ring item should stay within 88pt")
+        expect(classic.itemLength <= 105, "classic double-ring item with task badge should stay within 105pt")
         expect(classic.mode == .classic, "classic presentation should select the number-ring renderer")
         let aquaImage = renderer.render(classic, appearance: NSAppearance(named: .aqua))
         let darkImage = renderer.render(classic, appearance: NSAppearance(named: .darkAqua))
@@ -362,10 +405,10 @@ enum StatusItemPresentationSelfTest {
             singleClassic.itemLength + StatusItemLayoutMetrics.classicQuotaUnitWidth == classic.itemLength,
             "classic mode should release exactly one quota slot for 7d-only data"
         )
-        expect(singleClassic.itemLength == 55, "classic single-quota item should use the compact 55pt width")
+        expect(singleClassic.itemLength == 72, "classic single-quota item should use the compact 72pt width")
 
         let rich = builder.build(source: source, preferences: .default, language: .en, now: now)
-        expect(rich.itemLength <= 134, "remaining percentages and boundary should stay compact")
+        expect(rich.itemLength <= 151, "remaining percentages, task badge, and boundary should stay compact")
         expect(rich.quotaMetrics.count == 2, "rich mode should keep two rows when both quotas exist")
 
         let singleRich = builder.build(
@@ -462,12 +505,16 @@ enum StatusItemPresentationSelfTest {
                 0,
                 Int(((StatusItemLayoutMetrics.richSingleQuotaBarRect.maxX + 1) * scaleX).rounded(.down))
             )
+            let endX = min(
+                bitmap.pixelsWide,
+                Int(((image.size.width - StatusItemLayoutMetrics.taskIndicatorWidth) * scaleX).rounded(.down))
+            )
             var minX = bitmap.pixelsWide
             var maxX = -1
             var minY = bitmap.pixelsHigh
             var maxY = -1
             for y in 0..<bitmap.pixelsHigh {
-                for x in startX..<bitmap.pixelsWide
+                for x in startX..<endX
                     where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.55 {
                     minX = min(minX, x)
                     maxX = max(maxX, x)

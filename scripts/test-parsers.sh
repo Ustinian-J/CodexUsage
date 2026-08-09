@@ -36,7 +36,7 @@ OUTPUT="$TMP_DIR/out.json"
 CODEXUSAGE_HOME_OVERRIDE="$TMP_DIR" \
 CODEXUSAGE_CACHE_OVERRIDE="$CACHE_DIR" \
 CODEXUSAGE_RUNTIME_FILTER="claude-code" \
-  build/CodexUsage.app/Contents/MacOS/CodexUsage --dump-json > "$OUTPUT"
+  build/CodexS.app/Contents/MacOS/CodexS --dump-json > "$OUTPUT"
 
 grep -q '"schemaVersion" : 2' "$OUTPUT"
 grep -q '"id" : "claude-code"' "$OUTPUT"
@@ -74,7 +74,7 @@ MIGRATED_OUTPUT="$TMP_DIR/out-migrated.json"
 CODEXUSAGE_HOME_OVERRIDE="$TMP_DIR" \
 CODEXUSAGE_CACHE_OVERRIDE="$CACHE_DIR" \
 CODEXUSAGE_RUNTIME_FILTER="claude-code" \
-  build/CodexUsage.app/Contents/MacOS/CodexUsage --dump-json > "$MIGRATED_OUTPUT"
+  build/CodexS.app/Contents/MacOS/CodexS --dump-json > "$MIGRATED_OUTPUT"
 
 grep -q '"visibleTotalTokens" : 1900' "$MIGRATED_OUTPUT"
 grep -q '"version":2' "$CACHE_FILE"
@@ -86,7 +86,7 @@ WARM_OUTPUT="$TMP_DIR/out-warm.json"
 CODEXUSAGE_HOME_OVERRIDE="$TMP_DIR" \
 CODEXUSAGE_CACHE_OVERRIDE="$CACHE_DIR" \
 CODEXUSAGE_RUNTIME_FILTER="claude-code" \
-  build/CodexUsage.app/Contents/MacOS/CodexUsage --dump-json > "$WARM_OUTPUT"
+  build/CodexS.app/Contents/MacOS/CodexS --dump-json > "$WARM_OUTPUT"
 
 grep -q '"visibleTotalTokens" : 1900' "$WARM_OUTPUT"
 test "$FIRST_CACHE_MTIME" = "$(stat -f %m "$CACHE_FILE")"

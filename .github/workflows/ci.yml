@@ -22,13 +22,13 @@ jobs:
             make_target: release-intel
             asset_arch: x86_64
             binary_arch: x86_64
-            artifact_name: CodexUsage-intel
+            artifact_name: CodexS-intel
           - label: Apple Silicon
             runner: macos-15
             make_target: release-arm64
             asset_arch: arm64
             binary_arch: arm64
-            artifact_name: CodexUsage-apple-silicon
+            artifact_name: CodexS-apple-silicon
 
     steps:
       # Pinned to the verified actions/checkout v4.3.1 commit.
@@ -57,12 +57,13 @@ jobs:
         run: |
           set -euo pipefail
           make build
-          binary="build/CodexUsage.app/Contents/MacOS/CodexUsage"
+          binary="build/CodexS.app/Contents/MacOS/CodexS"
           "$binary" --self-test-statistics-time-zone
           "$binary" --self-test-status-item
           "$binary" --self-test-rate-limits
           "$binary" --self-test-runtime-reset-times
           "$binary" --self-test-task-progress
+          "$binary" --self-test-task-activity
           "$binary" --self-test-quota-pace
           "$binary" --self-test-quota-alerts
           "$binary" --self-test-reset-credits
@@ -85,8 +86,8 @@ jobs:
           shasum -a 256 -c "$checksum"
           dmg="${checksum%.sha256}"
           hdiutil verify "$dmg"
-          file build/CodexUsage.app/Contents/MacOS/CodexUsage | grep -q "$BINARY_ARCH"
-          codesign --verify --deep --strict build/CodexUsage.app
+          file build/CodexS.app/Contents/MacOS/CodexS | grep -q "$BINARY_ARCH"
+          codesign --verify --deep --strict build/CodexS.app
 
       # Pinned to the verified actions/upload-artifact v4.6.2 commit.
       - name: Upload installer

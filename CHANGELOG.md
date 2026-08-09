@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-09
+
+- Renamed the user-facing app, executable, installer, and release repository identity to CodexS (Codex Secretary) while preserving the existing bundle ID, settings keys, notification identifiers, and cache paths for upgrade compatibility.
+- Added local Codex task monitoring from rollout start, completion, and interruption events while ignoring and never retaining final-response text.
+- Added a fixed-width task state badge with red/play running, green/check idle, gray/dash unavailable, and an independent blinking amber unread marker, including live Reduce Motion behavior and accessible text.
+- Added a polished task-activity card with running/unread counts, recent outcomes, review actions, and “Mark all read”.
+- Added optional native task-completion alerts, checkpointed cold-start recovery, copied-event deduplication, subagent filtering, partial-line handling, legacy SQLite schema fallback, and periodic stale-running recovery.
+- Standardized 5h and 7d quota identity colors across the menu bar and popover for faster comparison.
+- Added a native Windows x64 tray build with the same quota/token/task semantics, local completion alerts, a polished dashboard, per-user single-EXE install/uninstall, and no third-party runtime packages.
+
 ## 0.2.3 - 2026-07-16
 
 - Replaced the ambiguous runtime-specific open command with “Open Main Window”.

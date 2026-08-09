@@ -69,6 +69,17 @@ struct StatusItemMetricPresentation: Equatable, Identifiable {
     var isQuota: Bool { metric.isQuota }
 }
 
+struct StatusItemTaskIndicatorPresentation: Equatable {
+    let monitorIsReady: Bool
+    let runningCount: Int
+    let unreadCount: Int
+    let yellowIsBright: Bool
+
+    var showsRed: Bool { runningCount > 0 }
+    var showsYellow: Bool { unreadCount > 0 }
+    var showsGreen: Bool { monitorIsReady && runningCount == 0 }
+}
+
 struct StatusItemPresentation: Equatable {
     let mode: StatusItemDisplayMode
     let quotaMode: QuotaDisplayMode
@@ -78,6 +89,7 @@ struct StatusItemPresentation: Equatable {
     let itemLength: CGFloat
     let showsNoActiveQuota: Bool
     let metrics: [StatusItemMetricPresentation]
+    let taskIndicator: StatusItemTaskIndicatorPresentation
     let tooltip: String
     let accessibilityValue: String
 
@@ -93,6 +105,7 @@ struct StatusItemPresentation: Equatable {
 enum StatusItemLayoutMetrics {
     static let imageHeight: CGFloat = 22
     static let itemOuterPadding: CGFloat = 8
+    static let taskIndicatorWidth: CGFloat = 17
     static let minimalImageWidth: CGFloat = 26
     static let minimalOuterRingDiameter: CGFloat = 21
     static let minimalInnerRingDiameter: CGFloat = 14
@@ -147,20 +160,24 @@ enum StatusItemLayoutMetrics {
 
         switch normalized.displayMode {
         case .minimal:
-            return minimalImageWidth
+            return minimalImageWidth + taskIndicatorWidth
         case .classic:
             return leadingContentWidth
                 + CGFloat(quotaCount + (showsNoActiveQuota ? 1 : 0)) * classicQuotaUnitWidth
                 + (showsToday ? classicTokenUnitWidth : 0)
                 + 2
+                + taskIndicatorWidth
         case .rich:
+            let contentWidth: CGFloat
             if quotaCount > 0 || showsNoActiveQuota {
                 let quotaWidth = normalized.showsResetCountdown
                     && !showsNoActiveQuota ? richQuotaWidthWithReset
                     : richQuotaWidthWithoutReset
-                return quotaWidth + (showsToday ? richTokenExtensionWidth : 0)
+                contentWidth = quotaWidth + (showsToday ? richTokenExtensionWidth : 0)
+            } else {
+                contentWidth = showsToday ? richTokenOnlyWidth : richQuotaWidthWithoutReset
             }
-            return showsToday ? richTokenOnlyWidth : richQuotaWidthWithoutReset
+            return contentWidth + taskIndicatorWidth
         }
     }
 }
@@ -171,6 +188,8 @@ struct StatusItemPresentationBuilder {
         preferences: StatusItemPreferences,
         language: WidgetLanguage,
         shortcutName: String? = GlobalShortcut.default.displayName,
+        taskActivity: CodexTaskActivitySnapshot = .starting,
+        yellowIsBright: Bool = true,
         now: Date = Date()
     ) -> StatusItemPresentation {
         let preferences = preferences.normalized()
@@ -207,13 +226,15 @@ struct StatusItemPresentationBuilder {
             metrics: metrics,
             showsNoActiveQuota: showsNoActiveQuota
         )
-        let description = accessibilityDescription(
+        let quotaDescription = accessibilityDescription(
             source: source,
             preferences: preferences,
             metrics: metrics,
             showsNoActiveQuota: showsNoActiveQuota,
             language: language
         )
+        let taskDescription = taskActivityDescription(taskActivity, language: language)
+        let description = quotaDescription + " · " + taskDescription
         let action: String
         if let shortcutName {
             action = language.text(
@@ -233,9 +254,35 @@ struct StatusItemPresentationBuilder {
             itemLength: imageWidth + StatusItemLayoutMetrics.itemOuterPadding,
             showsNoActiveQuota: showsNoActiveQuota,
             metrics: metrics,
-            tooltip: "CodexUsage · \(description) · \(action)",
+            taskIndicator: StatusItemTaskIndicatorPresentation(
+                monitorIsReady: taskActivity.availability == .ready,
+                runningCount: taskActivity.runningCount,
+                unreadCount: taskActivity.unreadCount,
+                yellowIsBright: yellowIsBright
+            ),
+            tooltip: "CodexS · \(description) · \(action)",
             accessibilityValue: description
         )
+    }
+
+    private func taskActivityDescription(
+        _ activity: CodexTaskActivitySnapshot,
+        language: WidgetLanguage
+    ) -> String {
+        switch activity.availability {
+        case .starting:
+            return language.text("任务监控正在启动", "Task monitoring is starting")
+        case .unavailable:
+            return language.text("任务监控暂不可用", "Task monitoring is unavailable")
+        case .ready:
+            if activity.runningCount == 0, activity.unreadCount == 0 {
+                return language.text("Codex 空闲", "Codex is idle")
+            }
+            return language.text(
+                "\(activity.runningCount) 个任务执行中，\(activity.unreadCount) 条未读完成",
+                "\(activity.runningCount) tasks running, \(activity.unreadCount) unread completions"
+            )
+        }
     }
 
     /// Preferences remain persistent, while the rendered set follows the last

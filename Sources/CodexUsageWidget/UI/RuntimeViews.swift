@@ -57,6 +57,7 @@ struct RuntimeStatusMenuView: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
+    @ObservedObject var taskActivityStore: CodexTaskActivityStore
     let openRuntime: (RuntimeScope) -> Void
     let openCurrent: () -> Void
     let openSettings: () -> Void
@@ -74,6 +75,11 @@ struct RuntimeStatusMenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            TaskActivityCard(
+                store: taskActivityStore,
+                language: language,
+                onOpenCodex: openCurrent
+            )
             RuntimeSelector(
                 selected: selectedScope,
                 scopes: displayedScopes,
@@ -92,6 +98,7 @@ struct RuntimeStatusMenuView: View {
                 quotaResetTimesRow
                 accountCycleRow
             }
+            Spacer(minLength: 0)
             footer
         }
         .padding(14)
@@ -108,7 +115,7 @@ struct RuntimeStatusMenuView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
-                Text("CodexUsage")
+                Text("CodexS")
                     .font(.system(size: 14, weight: .semibold))
                 Text("\(selectedScope.displayName) · \(language.text("刷新", "Refreshed")) \(runtimeTimeOnly(store.snapshot.refreshedAt))")
                     .font(.system(size: 10, weight: .medium))
@@ -431,12 +438,13 @@ struct RuntimeSummaryCard: View {
             Text(runtimeFormatPercent(item.value))
                 .font(.system(size: 15, weight: .bold, design: .rounded))
                 .monospacedDigit()
+                .foregroundStyle(quotaTint(item))
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule(style: .continuous)
                         .fill(WidgetPalette.surfaceTrack)
                     Capsule(style: .continuous)
-                        .fill(statusTint.opacity(0.72))
+                        .fill(quotaTint(item).opacity(0.82))
                         .frame(width: proxy.size.width * CGFloat(max(0, min(100, item.value)) / 100))
                 }
             }
@@ -446,6 +454,10 @@ struct RuntimeSummaryCard: View {
                 .foregroundStyle(.tertiary)
         }
         .frame(width: width, alignment: .leading)
+    }
+
+    private func quotaTint(_ item: RuntimeQuotaSummaryItem) -> Color {
+        item.id == "five-hour" ? WidgetPalette.brandPrimary : WidgetPalette.brandSecondary
     }
 
     private var quotaUnavailableColumn: some View {
