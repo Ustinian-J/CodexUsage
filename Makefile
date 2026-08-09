@@ -127,7 +127,7 @@ dmg-intel:
 	$(MAKE) dmg TARGET_TRIPLE="$(INTEL_TARGET_TRIPLE)"
 
 checksum: dmg
-	shasum -a 256 "$(DMG_PATH)" > "$(DMG_PATH).sha256"
+	cd "$(DIST_DIR)" && shasum -a 256 "$(DMG_NAME)" > "$(DMG_NAME).sha256"
 	@cat "$(DMG_PATH).sha256"
 
 checksum-arm64:

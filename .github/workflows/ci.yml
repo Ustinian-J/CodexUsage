@@ -83,7 +83,7 @@ jobs:
           make "$MAKE_TARGET" SWIFT_OPTIMIZATION=-O
           checksum="$(find dist -maxdepth 1 -name "*-mac-${ASSET_ARCH}.dmg.sha256" -print -quit)"
           test -n "$checksum"
-          shasum -a 256 -c "$checksum"
+          (cd dist && shasum -a 256 -c "$(basename "$checksum")")
           dmg="${checksum%.sha256}"
           hdiutil verify "$dmg"
           file build/CodexS.app/Contents/MacOS/CodexS | grep -q "$BINARY_ARCH"

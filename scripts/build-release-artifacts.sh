@@ -39,7 +39,7 @@ verify_asset() {
 
   [[ -f "$dmg" ]] || { echo "Missing release asset: $dmg" >&2; exit 1; }
   [[ -f "$checksum" ]] || { echo "Missing checksum: $checksum" >&2; exit 1; }
-  shasum -a 256 -c "$checksum"
+  (cd "$(dirname "$checksum")" && shasum -a 256 -c "$(basename "$checksum")")
   hdiutil verify "$dmg" >/dev/null
 
   mount_dir="$(mktemp -d)"
