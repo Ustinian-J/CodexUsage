@@ -34,7 +34,7 @@ struct TaskActivityCard: View {
             case .starting:
                 compactMessage(
                     icon: "hourglass",
-                    text: language.text("正在连接 Codex 本地任务记录…", "Connecting to local Codex task records…")
+                    text: language.text("正在连接 Codex 本机与远程任务记录…", "Connecting to local and remote Codex task records…")
                 )
             case let .unavailable(message):
                 compactMessage(
@@ -95,6 +95,9 @@ struct TaskActivityCard: View {
                     .font(.system(size: 9, weight: completion.readAt == nil ? .semibold : .medium))
                     .lineLimit(1)
                 HStack(spacing: 5) {
+                    if let sourceLabel = completion.sourceLabel {
+                        Text("@\(sourceLabel)")
+                    }
                     if let projectName = completion.projectName {
                         Text(projectName)
                     }
@@ -109,9 +112,11 @@ struct TaskActivityCard: View {
                     .fill(WidgetPalette.statusWarning)
                     .frame(width: 5, height: 5)
             }
-            Button(language.text("已读并打开", "Read & open")) {
+            Button(completion.sourceLabel == nil
+                ? language.text("已读并打开", "Read & open")
+                : language.text("标为已读", "Mark read")) {
                 store.markRead(completion.id)
-                onOpenCodex()
+                if completion.sourceLabel == nil { onOpenCodex() }
             }
             .buttonStyle(.plain)
             .font(.system(size: 8, weight: .semibold))
@@ -152,9 +157,12 @@ struct TaskActivityCard: View {
         case .unavailable:
             return language.text("监控不可用", "Monitor unavailable")
         case .ready:
+            let source = snapshot.remoteHosts.isEmpty
+                ? language.text("本机", "Local")
+                : language.text("本机 + \(snapshot.remoteHosts.count) 远程", "Local + \(snapshot.remoteHosts.count) remote")
             return language.text(
-                "\(snapshot.runningCount) 个执行中 · \(snapshot.unreadCount) 条新完成",
-                "\(snapshot.runningCount) running · \(snapshot.unreadCount) new"
+                "\(source) · \(snapshot.runningCount) 个执行中 · \(snapshot.unreadCount) 条新完成",
+                "\(source) · \(snapshot.runningCount) running · \(snapshot.unreadCount) new"
             )
         }
     }

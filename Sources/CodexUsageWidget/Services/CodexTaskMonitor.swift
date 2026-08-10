@@ -126,16 +126,43 @@ final class CodexTaskActivityPersistence {
     }
 }
 
+final class CodexRemoteTaskCheckpointPersistence {
+    private static let storageKey = "CodexUsage.remoteTaskCheckpoints.v1"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load() -> [String: Date] {
+        guard let data = defaults.data(forKey: Self.storageKey),
+              let values = try? JSONDecoder().decode([String: Date].self, from: data)
+        else { return [:] }
+        return values
+    }
+
+    func save(_ values: [String: Date]) {
+        guard let data = try? JSONEncoder().encode(values) else { return }
+        defaults.set(data, forKey: Self.storageKey)
+    }
+}
+
 final class CodexTaskActivityStore: ObservableObject {
     @Published private(set) var snapshot: CodexTaskActivitySnapshot
     var onNewCompletion: ((CodexTaskCompletion) -> Void)?
 
     private let homeDirectory: URL
     private let persistence: CodexTaskActivityPersistence
+    private let remoteCheckpointPersistence: CodexRemoteTaskCheckpointPersistence
     private var reducer: CodexTaskActivityReducer
     private var baselineEstablished: Bool
     private var replayNotBefore: Date?
-    private var monitor: CodexTaskMonitor?
+    private var localMonitor: CodexTaskMonitor?
+    private var remoteMonitors: [String: RemoteCodexTaskMonitor] = [:]
+    private var remoteCheckpoints: [String: Date]
+    private var sourceAvailability: [String: CodexTaskMonitorAvailability] = ["local": .starting]
+    private var configuredRemoteHosts: [String] = []
+    private var started = false
 
     init(
         homeDirectory: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
@@ -144,6 +171,9 @@ final class CodexTaskActivityStore: ObservableObject {
         self.homeDirectory = homeDirectory
         let persistence = CodexTaskActivityPersistence(defaults: defaults)
         self.persistence = persistence
+        let remoteCheckpointPersistence = CodexRemoteTaskCheckpointPersistence(defaults: defaults)
+        self.remoteCheckpointPersistence = remoteCheckpointPersistence
+        self.remoteCheckpoints = remoteCheckpointPersistence.load()
         let persisted = persistence.load()
         self.reducer = CodexTaskActivityReducer(persisted: persisted)
         self.baselineEstablished = persisted.baselineEstablished
@@ -151,37 +181,52 @@ final class CodexTaskActivityStore: ObservableObject {
         self.snapshot = reducer.snapshot(availability: .starting)
     }
 
-    func start() {
-        guard monitor == nil else { return }
+    func start(remoteHosts: [String] = []) {
+        guard !started else { return }
+        started = true
+        configuredRemoteHosts = normalizedRemoteHosts(remoteHosts)
         let monitor = CodexTaskMonitor(
             homeDirectory: homeDirectory,
             baselineEstablished: baselineEstablished,
             replayNotBefore: replayNotBefore
         ) { [weak self] update in
             DispatchQueue.main.async {
-                self?.handle(update)
+                self?.handleLocal(update)
             }
         }
-        self.monitor = monitor
+        self.localMonitor = monitor
         monitor.start()
+        synchronizeRemoteMonitors()
     }
 
     func stop() {
-        monitor?.stop()
-        monitor = nil
+        started = false
+        localMonitor?.stop()
+        localMonitor = nil
+        for monitor in remoteMonitors.values { monitor.stop() }
+        remoteMonitors.removeAll()
+        sourceAvailability = ["local": .starting]
+    }
+
+    func configureRemoteHosts(_ hosts: [String]) {
+        let normalized = normalizedRemoteHosts(hosts)
+        guard normalized != configuredRemoteHosts else { return }
+        configuredRemoteHosts = normalized
+        guard started else { return }
+        synchronizeRemoteMonitors()
     }
 
     func markRead(_ identity: String) {
         guard reducer.markRead(identity) else { return }
-        publishAndPersist(availability: snapshot.availability)
+        publishAndPersist()
     }
 
     func markAllRead() {
         guard reducer.markAllRead() else { return }
-        publishAndPersist(availability: snapshot.availability)
+        publishAndPersist()
     }
 
-    private func handle(_ update: CodexTaskMonitorUpdate) {
+    private func handleLocal(_ update: CodexTaskMonitorUpdate) {
         switch update {
         case let .events(events, origin):
             var changed = false
@@ -194,7 +239,7 @@ final class CodexTaskActivityStore: ObservableObject {
                 }
             }
             if changed {
-                publishAndPersist(availability: snapshot.availability)
+                publishAndPersist()
             }
             for completion in completions {
                 onNewCompletion?(completion)
@@ -205,24 +250,98 @@ final class CodexTaskActivityStore: ObservableObject {
             if !baselineEstablished {
                 baselineEstablished = true
             }
-            publishAndPersist(availability: .ready)
+            sourceAvailability["local"] = .ready
+            publishAndPersist()
 
         case let .checkpoint(date):
             guard replayNotBefore == nil || date > replayNotBefore! else { return }
             replayNotBefore = date
-            publishAndPersist(availability: snapshot.availability)
+            publishAndPersist()
 
         case let .reconcile(cutoff):
             guard reducer.removeRunningTasks(startedBefore: cutoff) else { return }
-            publishAndPersist(availability: snapshot.availability)
+            publishAndPersist()
 
         case let .unavailable(message):
-            snapshot = reducer.snapshot(availability: .unavailable(message))
+            sourceAvailability["local"] = .unavailable(message)
+            publishAndPersist()
         }
     }
 
-    private func publishAndPersist(availability: CodexTaskMonitorAvailability) {
-        snapshot = reducer.snapshot(availability: availability)
+    private func handleRemote(_ update: RemoteCodexTaskMonitorUpdate, host: String) {
+        guard configuredRemoteHosts.contains(where: {
+            $0.caseInsensitiveCompare(host) == .orderedSame
+        }) else { return }
+        let sourceID = "remote:\(host.lowercased())"
+        switch update {
+        case let .events(events, origin):
+            var changed = false
+            var completions: [CodexTaskCompletion] = []
+            for event in events {
+                let transition = reducer.apply(event, origin: origin)
+                changed = changed || transition.changed
+                if let completion = transition.newCompletion { completions.append(completion) }
+            }
+            if changed { publishAndPersist() }
+            for completion in completions { onNewCompletion?(completion) }
+
+        case let .ready(checkpoint):
+            remoteCheckpoints[host.lowercased()] = checkpoint
+            remoteCheckpointPersistence.save(remoteCheckpoints)
+            sourceAvailability[sourceID] = .ready
+            _ = reducer.removeRunningTasks(startedBefore: Date().addingTimeInterval(-12 * 60 * 60))
+            publishAndPersist()
+
+        case let .unavailable(message):
+            sourceAvailability[sourceID] = .unavailable(message)
+            publishAndPersist()
+        }
+    }
+
+    private func synchronizeRemoteMonitors() {
+        let desired = Set(configuredRemoteHosts.map { $0.lowercased() })
+        let removedKeys = remoteMonitors.keys.filter { !desired.contains($0) }
+        for key in removedKeys {
+            remoteMonitors.removeValue(forKey: key)?.stop()
+            sourceAvailability.removeValue(forKey: "remote:\(key)")
+            _ = reducer.removeRunningTasks(sourceLabel: key)
+        }
+        for host in configuredRemoteHosts {
+            let key = host.lowercased()
+            guard remoteMonitors[key] == nil else { continue }
+            sourceAvailability["remote:\(key)"] = .starting
+            let monitor = RemoteCodexTaskMonitor(
+                host: host,
+                recoveryCheckpoint: remoteCheckpoints[key]
+            ) { [weak self] update in
+                DispatchQueue.main.async {
+                    self?.handleRemote(update, host: host)
+                }
+            }
+            remoteMonitors[key] = monitor
+            monitor.start()
+        }
+        publishAndPersist()
+    }
+
+    private func normalizedRemoteHosts(_ hosts: [String]) -> [String] {
+        CodexRemoteHost.parseList(hosts.joined(separator: ","))
+    }
+
+    private func combinedAvailability() -> CodexTaskMonitorAvailability {
+        let orderedKeys = sourceAvailability.keys.sorted()
+        for key in orderedKeys {
+            if case let .unavailable(message) = sourceAvailability[key] { return .unavailable(message) }
+        }
+        if sourceAvailability.values.contains(.starting) { return .starting }
+        return .ready
+    }
+
+    private func publishAndPersist() {
+        snapshot = reducer.snapshot(
+            availability: combinedAvailability(),
+            remoteHosts: configuredRemoteHosts
+        )
         persistence.save(reducer.persistedState(
             baselineEstablished: baselineEstablished,
             replayNotBefore: replayNotBefore
@@ -557,7 +676,7 @@ private final class CodexTaskMonitor {
     }
 }
 
-private func compactTaskTitle(_ rawValue: String) -> String {
+func compactTaskTitle(_ rawValue: String) -> String {
     let firstLine = rawValue
         .split(whereSeparator: \.isNewline)
         .first

@@ -5,7 +5,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root "src/CodexS.Windows/CodexS.Windows.csproj"
 $publish = Join-Path $root "artifacts/publish"
 $dist = Join-Path $root "../dist"
-$version = "0.3.0"
+$version = "0.4.0"
 $asset = Join-Path $dist "CodexS-$version-windows-x64.exe"
 
 if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }

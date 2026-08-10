@@ -16,18 +16,20 @@ internal sealed class DashboardForm : Form
     private readonly Label taskCounts = new() { AutoSize = true, ForeColor = Muted, Font = new Font("Segoe UI", 9) };
     private readonly FlowLayoutPanel resultList = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
     private readonly Label footerStatus = new() { AutoSize = true, ForeColor = Muted, Font = new Font("Segoe UI", 8.5f), Anchor = AnchorStyles.Left };
+    private readonly TextBox remoteHosts = new() { Width = 220, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(25, 30, 40), ForeColor = Color.White };
     private UsageSnapshot snapshot = UsageSnapshot.Starting;
 
     internal event Action? MarkAllReadRequested;
     internal event Action? RefreshRequested;
     internal event Action<string>? ResultOpened;
+    internal event Action<string>? RemoteHostsSaved;
 
     internal DashboardForm()
     {
         Text = "CodexS · Codex Secretary";
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(430, 560);
-        MinimumSize = MaximumSize = new Size(446, 599);
+        ClientSize = new Size(430, 610);
+        MinimumSize = MaximumSize = new Size(446, 649);
         BackColor = Background;
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 9);
@@ -47,7 +49,10 @@ internal sealed class DashboardForm : Form
             : value.Running.Count > 0 ? "● Codex 正在执行" : "✓ Codex 当前空闲";
         taskState.ForeColor = !value.TaskMonitorReady ? Muted
             : value.Running.Count > 0 ? Color.FromArgb(244, 74, 90) : Color.FromArgb(55, 196, 123);
-        taskCounts.Text = $"{value.Running.Count} 个执行中  ·  {value.UnreadCount} 条未读  ·  今日进度 {value.TodayCompletedCount}/{value.TodayTaskCount}";
+        if (!value.TaskMonitorReady && !string.IsNullOrWhiteSpace(value.TaskMonitorMessage))
+            taskState.Text = $"— {value.TaskMonitorMessage}";
+        taskCounts.Text = $"{value.Running.Count} 个执行中  ·  {value.UnreadCount} 条未读  ·  今日进度 {value.TodayCompletedCount}/{value.TodayTaskCount}  ·  {value.RemoteHosts.Count} 台远程";
+        if (!remoteHosts.Focused) remoteHosts.Text = string.Join(", ", value.RemoteHosts);
         footerStatus.Text = value.QuotaStale
             ? $"额度等待刷新 · {value.StatusMessage ?? "保留上次可信值"}"
             : $"额度已刷新 · {DateTime.Now:HH:mm:ss}";
@@ -66,12 +71,13 @@ internal sealed class DashboardForm : Form
     {
         var root = new TableLayoutPanel {
             Dock = DockStyle.Fill, Padding = new Padding(14), BackColor = Background,
-            RowCount = 5, ColumnCount = 1
+            RowCount = 6, ColumnCount = 1
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
 
         var title = new Label {
@@ -110,6 +116,17 @@ internal sealed class DashboardForm : Form
         tasks.Controls.Add(taskLayout);
         root.Controls.Add(tasks, 0, 3);
 
+        var remote = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, BackColor = Background, Padding = new Padding(2, 10, 0, 5) };
+        remote.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        remote.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        remote.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        remote.Controls.Add(new Label { Text = "SSH 远程", AutoSize = true, ForeColor = Muted, Padding = new Padding(0, 5, 8, 0) }, 0, 0);
+        remoteHosts.Dock = DockStyle.Fill;
+        remoteHosts.PlaceholderText = "~/.ssh/config 别名，如 codex";
+        remote.Controls.Add(remoteHosts, 1, 0);
+        remote.Controls.Add(ActionButton("保存", () => RemoteHostsSaved?.Invoke(remoteHosts.Text)), 2, 0);
+        root.Controls.Add(remote, 0, 4);
+
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, BackColor = Background, Padding = new Padding(0, 8, 0, 0) };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -119,7 +136,7 @@ internal sealed class DashboardForm : Form
         footer.Controls.Add(ActionButton("全部已读", () => MarkAllReadRequested?.Invoke()), 1, 0);
         footer.Controls.Add(ActionButton("刷新", () => RefreshRequested?.Invoke()), 2, 0);
         footer.Controls.Add(ActionButton("隐藏", Hide), 3, 0);
-        root.Controls.Add(footer, 0, 4);
+        root.Controls.Add(footer, 0, 5);
         Controls.Add(root);
     }
 
@@ -132,7 +149,7 @@ internal sealed class DashboardForm : Form
             var row = new Button {
                 Width = 370, Height = 34, FlatStyle = FlatStyle.Flat,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Text = $"{(item.Interrupted ? "!" : "✓")}  {item.Project}  ·  {item.CompletedAt.LocalDateTime:HH:mm}",
+                Text = $"{(item.Interrupted ? "!" : "✓")}  {(item.Source is null ? "" : $"@{item.Source}  ")}{item.Project}  ·  {item.CompletedAt.LocalDateTime:HH:mm}",
                 BackColor = item.ReadAt is null ? Color.FromArgb(47, 55, 70) : Color.FromArgb(38, 44, 57),
                 ForeColor = item.ReadAt is null ? Color.White : Muted,
                 Font = new Font("Segoe UI", 9, item.ReadAt is null ? FontStyle.Bold : FontStyle.Regular),

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-10
+
+- Added opt-in SSH task monitoring on macOS and Windows using aliases from the user's existing OpenSSH config.
+- Added a long-lived, read-only remote event stream that parses rollout files on the remote host and returns only start, completion, interruption, project, thread-title, ID, and timestamp metadata.
+- Added per-host recovery checkpoints, reconnect handling, remote-source labels, and conservative unavailable state so a disconnected remote source cannot appear idle.
+- Added remote-host controls to Mac Settings and the Windows dashboard without storing passwords, keys, Codex credentials, prompts, responses, or tool output.
+- Extended the source and CI security policies to allow only the reviewed system SSH launch with host validation, batch authentication, strict host-key checking, and a fixed remote parser.
+
 ## 0.3.0 - 2026-08-09
 
 - Renamed the user-facing app, executable, installer, and release repository identity to CodexS (Codex Secretary) while preserving the existing bundle ID, settings keys, notification identifiers, and cache paths for upgrade compatibility.

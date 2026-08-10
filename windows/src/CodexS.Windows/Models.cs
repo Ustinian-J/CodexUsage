@@ -5,18 +5,22 @@ internal sealed record QuotaWindow(double RemainingPercent, DateTimeOffset? Rese
 internal sealed record TaskResult(
     string Id,
     string Project,
+    string? Source,
     DateTimeOffset CompletedAt,
     bool Interrupted,
     DateTimeOffset? ReadAt);
 
-internal sealed record RunningTask(string Id, string SessionId, string Project, DateTimeOffset StartedAt);
+internal sealed record RunningTask(
+    string Id, string SessionId, string Project, string? Source, DateTimeOffset StartedAt);
 
 internal enum TaskEventKind { Started, Completed, Interrupted }
+internal enum TaskEventOrigin { Baseline, Live, Recovery }
 
 internal sealed record TaskEvent(
     string Id,
     string SessionId,
     string Project,
+    string? Source,
     DateTimeOffset OccurredAt,
     TaskEventKind Kind);
 
@@ -29,11 +33,13 @@ internal sealed record UsageSnapshot(
     IReadOnlyList<RunningTask> Running,
     IReadOnlyList<TaskResult> Results,
     bool TaskMonitorReady,
+    string? TaskMonitorMessage,
+    IReadOnlyList<string> RemoteHosts,
     bool QuotaStale,
     string? StatusMessage)
 {
     internal static readonly UsageSnapshot Starting = new(
-        null, null, 0, 0, 0, [], [], false, true, "正在读取 Codex 本地数据");
+        null, null, 0, 0, 0, [], [], false, "正在读取 Codex 本地数据", [], true, "正在读取 Codex 本地数据");
 
     internal int UnreadCount => Results.Count(item => item.ReadAt is null);
     internal int TodayCompletedCount => Results.Count(item =>

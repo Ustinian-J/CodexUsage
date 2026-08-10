@@ -23,7 +23,14 @@ internal sealed class TaskActivityReducer
 
     internal TaskResult? Apply(TaskEvent taskEvent, bool appendedLive)
     {
-        var originIsBaseline = !appendedLive && taskEvent.OccurredAt < ReplayNotBefore;
+        var origin = appendedLive ? TaskEventOrigin.Live
+            : taskEvent.OccurredAt < ReplayNotBefore ? TaskEventOrigin.Baseline
+            : BaselineEstablished ? TaskEventOrigin.Recovery : TaskEventOrigin.Live;
+        return Apply(taskEvent, origin);
+    }
+
+    internal TaskResult? Apply(TaskEvent taskEvent, TaskEventOrigin origin)
+    {
         if (taskEvent.Kind == TaskEventKind.Started)
         {
             if (terminalSet.Contains(taskEvent.Id)) return null;
@@ -35,7 +42,7 @@ internal sealed class TaskActivityReducer
                          .Select(item => item.Id).ToArray())
                 running.Remove(old);
             running[taskEvent.Id] = new RunningTask(
-                taskEvent.Id, taskEvent.SessionId, taskEvent.Project, taskEvent.OccurredAt);
+                taskEvent.Id, taskEvent.SessionId, taskEvent.Project, taskEvent.Source, taskEvent.OccurredAt);
             return null;
         }
 
@@ -47,11 +54,12 @@ internal sealed class TaskActivityReducer
             terminalSet.Remove(terminalOrder[0]);
             terminalOrder.RemoveAt(0);
         }
-        if (originIsBaseline) return null;
+        if (origin == TaskEventOrigin.Baseline) return null;
 
         var result = new TaskResult(
             taskEvent.Id,
             taskEvent.Project,
+            taskEvent.Source,
             taskEvent.OccurredAt,
             taskEvent.Kind == TaskEventKind.Interrupted,
             null);
@@ -76,6 +84,14 @@ internal sealed class TaskActivityReducer
     internal void RemoveStaleRunning(DateTimeOffset cutoff)
     {
         foreach (var id in running.Values.Where(item => item.StartedAt < cutoff).Select(item => item.Id).ToArray())
+            running.Remove(id);
+    }
+
+    internal void RemoveSource(string source)
+    {
+        foreach (var id in running.Values
+                     .Where(item => string.Equals(item.Source, source, StringComparison.OrdinalIgnoreCase))
+                     .Select(item => item.Id).ToArray())
             running.Remove(id);
     }
 

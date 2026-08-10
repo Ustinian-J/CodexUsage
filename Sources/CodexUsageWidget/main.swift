@@ -2907,6 +2907,7 @@ final class AppSettings: ObservableObject {
     private static let automaticUpdateChecksEnabledKey = "CodexUsage.update.autoCheckEnabled"
     private static let quotaAlertsEnabledKey = "CodexUsage.quotaAlerts.enabled"
     private static let taskCompletionAlertsEnabledKey = "CodexUsage.taskCompletionAlerts.enabled"
+    private static let remoteTaskHostsKey = "CodexUsage.remoteTaskHosts.v1"
     private static let subscriptionExpirationEnabledKey = "CodexUsage.subscriptionExpiration.enabled"
     private static let subscriptionExpirationDateKey = "CodexUsage.subscriptionExpiration.date"
     private static let skippedUpdateVersionKey = "CodexUsage.update.skippedVersion"
@@ -2960,6 +2961,16 @@ final class AppSettings: ObservableObject {
         didSet {
             defaults.set(taskCompletionAlertsEnabled, forKey: Self.taskCompletionAlertsEnabledKey)
         }
+    }
+
+    @Published var remoteTaskHostsText: String {
+        didSet {
+            defaults.set(remoteTaskHostsText, forKey: Self.remoteTaskHostsKey)
+        }
+    }
+
+    var remoteTaskHosts: [String] {
+        CodexRemoteHost.parseList(remoteTaskHostsText)
     }
 
     @Published var subscriptionExpirationEnabled: Bool {
@@ -3022,6 +3033,7 @@ final class AppSettings: ObservableObject {
         } else {
             taskCompletionAlertsEnabled = defaults.bool(forKey: Self.taskCompletionAlertsEnabledKey)
         }
+        remoteTaskHostsText = defaults.string(forKey: Self.remoteTaskHostsKey) ?? ""
         if defaults.object(forKey: Self.subscriptionExpirationEnabledKey) == nil {
             subscriptionExpirationEnabled = false
         } else {
@@ -3973,6 +3985,33 @@ struct SettingsPanelView: View {
                         settings: settings,
                         store: store,
                         taskActivityStore: taskActivityStore
+                    )
+                }
+
+                settingsSection(
+                    title: language.text("任务监听", "Task Monitoring"),
+                    detail: language.text("本机与 SSH 远程项目", "Local and SSH remote projects")
+                ) {
+                    SettingsPickerRow(
+                        title: language.text("远程 SSH 主机", "Remote SSH hosts"),
+                        detail: language.text(
+                            "填写 ~/.ssh/config 中的别名，多个用逗号分隔；留空仅监听本机",
+                            "Use aliases from ~/.ssh/config, separated by commas; leave empty for local only"
+                        )
+                    ) {
+                        TextField("codex", text: $settings.remoteTaskHostsText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: settingsAccessoryColumnWidth)
+                    }
+                    SettingsValueRow(
+                        title: language.text("远程隐私", "Remote privacy"),
+                        detail: language.text(
+                            "只读回传开始/完成/中断、项目名和线程标题；不传对话正文与凭据",
+                            "Read-only task events, project names, and thread titles; no transcript text or credentials"
+                        ),
+                        value: settings.remoteTaskHosts.isEmpty
+                            ? language.text("未启用", "Off")
+                            : language.text("已启用 \(settings.remoteTaskHosts.count) 台", "\(settings.remoteTaskHosts.count) enabled")
                     )
                 }
 
@@ -9319,7 +9358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             _ = installGlobalHotKeyHandler()
         }
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
-        taskActivityStore.start()
+        taskActivityStore.start(remoteHosts: settings.remoteTaskHosts)
         store.start()
         updateStore.startAutomaticCheck()
     }
@@ -9670,6 +9709,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] enabled in
                 self?.taskCompletionAlertService.updateAuthorization(enabled: enabled)
+            }
+            .store(in: &cancellables)
+
+        settings.$remoteTaskHostsText
+            .map(CodexRemoteHost.parseList)
+            .removeDuplicates()
+            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] hosts in
+                self?.taskActivityStore.configureRemoteHosts(hosts)
             }
             .store(in: &cancellables)
 

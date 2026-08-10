@@ -47,6 +47,13 @@ if grep -R --exclude='test-security.ps1' -nE '<PackageReference|auth\.json|HttpC
   echo "Windows source contains a forbidden dependency, credential path, or downloader" >&2
   exit 1
 fi
+grep -Fq 'FileName = "ssh.exe"' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs
+grep -Fq 'RemoteHostName.Validate(host)' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs
+grep -Fq 'StrictHostKeyChecking=yes' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs
+if grep -Fq 'last_agent_message' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs; then
+  echo "Windows remote monitor must not select message text" >&2
+  exit 1
+fi
 
 if grep -Eq 'check-release-ready|notarize-dmg|APPLE_ID|NOTARY_PASSWORD' Makefile; then
   echo "Makefile references an excluded release or credential path" >&2

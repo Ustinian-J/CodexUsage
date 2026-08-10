@@ -2,13 +2,14 @@
 
 CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. It shows remaining Codex 5-hour and weekly quota as rings/two bars, tracks today/7-day/lifetime tokens, reports running and completed task activity, and builds a daily task board from local Codex conversations and automations.
 
-> The current version is `0.3.0`. Builds are verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
+> The current version is `0.4.0`. Builds are verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
 
 ## Features
 
 - Live 5-hour and 7-day quota rings with the remaining percentage in each ring.
 - A single menu-bar state badge: red/play means running, green/check means idle, and gray/dash means unavailable. Unread completion is an independent blinking amber diamond, so running and unread remain visible together. The popover retains labeled red/yellow/green lights.
 - Incremental local Codex task monitoring, optional native completion/interruption notifications, and a “Mark all read” action that clears yellow attention.
+- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config` to show `@host`, project, running/completed/interrupted state, and an explicit unavailable state on disconnect.
 - Reset countdowns, used/remaining display modes, and multiple menu bar densities.
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
 - A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.
@@ -31,13 +32,14 @@ CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. I
 This repository does not fork upstream history. Source was imported through an explicit allowlist after auditing fixed upstream commit `cc800ff7afa254237fd088cb63004390d6492a99`. See [the upstream security audit](docs/SECURITY_AUDIT.md) and [UPSTREAM.md](UPSTREAM.md).
 
 - No third-party Swift, npm, Python, CocoaPods, or precompiled framework dependencies.
-- No access to `~/.codex/auth.json`, Keychain, browser cookies, SSH keys, or cloud credentials.
+- No access to `~/.codex/auth.json`, Keychain, browser cookies, or cloud credentials. When remote monitoring is enabled, system OpenSSH uses the existing configuration; CodexS never opens, copies, or stores SSH keys or passwords.
 - No upload of usage, conversations, tasks, paths, or account data.
 - Task monitoring extracts only the start, completion, and interruption fields it needs. If a log line contains `last_agent_message`, CodexS ignores it and never stores, displays, notifies, or uploads that text.
 - The only runtime internet request is an optional GitHub Release metadata `GET`; automatic checks are off by default.
 - No silent update download, replacement, or execution.
 - CI uses only official GitHub Actions pinned to full commit SHAs, `contents: read`, and no repository secrets.
-- `test-source-security.sh` continuously rejects credential access, network writes, downloaders, remote shells, login persistence, third-party dependency manifests, and precompiled libraries.
+- `test-source-security.sh` continuously rejects credential access, network writes, downloaders, login persistence, third-party dependency manifests, and precompiled libraries. SSH is allowed only in the reviewed remote-task monitor with fixed safety options.
+- The remote parser runs only in memory for the SSH session, installs no service, writes no remote files, and returns only allowlisted task metadata—never prompts, response text, tool arguments/output, or `last_agent_message`.
 - Low-quota alerts are delivered by the local macOS notification center and contain only the window, remaining percentage, and reset time.
 - Task notifications are also local and contain only the outcome, never the title, project path, or conversation text.
 - Every DMG is accompanied by a SHA-256 checksum.
@@ -79,7 +81,7 @@ Open the DMG and drag `CodexS.app` to `Applications`. If `CodexUsage.app` is alr
 - macOS 13 or later.
 - A local, signed-in Codex installation.
 - Codex must have been used at least once so its local state database exists.
-- The first Windows release monitors native Windows Codex sessions; WSL-only sessions are not yet supported.
+- Windows monitors native Windows Codex sessions and can also monitor Linux/macOS SSH hosts with Python 3. WSL-only sessions are not detected unless exposed through an SSH host alias.
 
 ## Build From Source
 

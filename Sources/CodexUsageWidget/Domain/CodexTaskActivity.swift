@@ -15,6 +15,14 @@ struct CodexTaskMetadata: Codable, Equatable {
     let threadID: String
     let title: String
     let projectName: String?
+    let sourceLabel: String?
+
+    init(threadID: String, title: String, projectName: String?, sourceLabel: String? = nil) {
+        self.threadID = threadID
+        self.title = title
+        self.projectName = projectName
+        self.sourceLabel = sourceLabel
+    }
 }
 
 enum CodexTaskEventKind: Equatable {
@@ -57,7 +65,26 @@ struct CodexRunningTask: Codable, Equatable, Identifiable {
     let threadID: String
     let title: String
     let projectName: String?
+    let sourceLabel: String?
     let startedAt: Date
+
+    init(
+        id: String,
+        turnID: String,
+        threadID: String,
+        title: String,
+        projectName: String?,
+        sourceLabel: String? = nil,
+        startedAt: Date
+    ) {
+        self.id = id
+        self.turnID = turnID
+        self.threadID = threadID
+        self.title = title
+        self.projectName = projectName
+        self.sourceLabel = sourceLabel
+        self.startedAt = startedAt
+    }
 }
 
 struct CodexTaskCompletion: Codable, Equatable, Identifiable {
@@ -66,15 +93,51 @@ struct CodexTaskCompletion: Codable, Equatable, Identifiable {
     let threadID: String
     let title: String
     let projectName: String?
+    let sourceLabel: String?
     let completedAt: Date
     let outcome: CodexTaskOutcome
     var readAt: Date?
+
+    init(
+        id: String,
+        turnID: String,
+        threadID: String,
+        title: String,
+        projectName: String?,
+        sourceLabel: String? = nil,
+        completedAt: Date,
+        outcome: CodexTaskOutcome,
+        readAt: Date?
+    ) {
+        self.id = id
+        self.turnID = turnID
+        self.threadID = threadID
+        self.title = title
+        self.projectName = projectName
+        self.sourceLabel = sourceLabel
+        self.completedAt = completedAt
+        self.outcome = outcome
+        self.readAt = readAt
+    }
 }
 
 struct CodexTaskActivitySnapshot: Equatable {
     let availability: CodexTaskMonitorAvailability
     let runningTasks: [CodexRunningTask]
     let recentCompletions: [CodexTaskCompletion]
+    let remoteHosts: [String]
+
+    init(
+        availability: CodexTaskMonitorAvailability,
+        runningTasks: [CodexRunningTask],
+        recentCompletions: [CodexTaskCompletion],
+        remoteHosts: [String] = []
+    ) {
+        self.availability = availability
+        self.runningTasks = runningTasks
+        self.recentCompletions = recentCompletions
+        self.remoteHosts = remoteHosts
+    }
 
     static let starting = CodexTaskActivitySnapshot(
         availability: .starting,
@@ -169,14 +232,18 @@ struct CodexTaskActivityReducer {
         )
     }
 
-    func snapshot(availability: CodexTaskMonitorAvailability) -> CodexTaskActivitySnapshot {
+    func snapshot(
+        availability: CodexTaskMonitorAvailability,
+        remoteHosts: [String] = []
+    ) -> CodexTaskActivitySnapshot {
         CodexTaskActivitySnapshot(
             availability: availability,
             runningTasks: runningByIdentity.values.sorted { lhs, rhs in
                 if lhs.startedAt != rhs.startedAt { return lhs.startedAt > rhs.startedAt }
                 return lhs.id < rhs.id
             },
-            recentCompletions: completions
+            recentCompletions: completions,
+            remoteHosts: remoteHosts
         )
     }
 
@@ -202,6 +269,7 @@ struct CodexTaskActivityReducer {
                 threadID: event.metadata.threadID,
                 title: event.metadata.title,
                 projectName: event.metadata.projectName,
+                sourceLabel: event.metadata.sourceLabel,
                 startedAt: event.occurredAt
             )
             return CodexTaskActivityTransition(changed: true, newCompletion: nil)
@@ -243,6 +311,17 @@ struct CodexTaskActivityReducer {
         return true
     }
 
+    mutating func removeRunningTasks(sourceLabel: String) -> Bool {
+        let identities = runningByIdentity.values
+            .filter { $0.sourceLabel?.caseInsensitiveCompare(sourceLabel) == .orderedSame }
+            .map(\.id)
+        guard !identities.isEmpty else { return false }
+        for identity in identities {
+            runningByIdentity.removeValue(forKey: identity)
+        }
+        return true
+    }
+
     private mutating func applyTerminal(
         _ event: CodexTaskEvent,
         outcome: CodexTaskOutcome,
@@ -264,6 +343,7 @@ struct CodexTaskActivityReducer {
             threadID: event.metadata.threadID,
             title: event.metadata.title,
             projectName: event.metadata.projectName,
+            sourceLabel: event.metadata.sourceLabel,
             completedAt: event.occurredAt,
             outcome: outcome,
             readAt: nil

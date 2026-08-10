@@ -10,6 +10,7 @@ internal static class AppPaths
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "CodexS", "data");
     internal static readonly string StateFile = Path.Combine(DataDirectory, "state-v1.json");
+    internal static readonly string RemoteHostsFile = Path.Combine(DataDirectory, "remote-hosts-v1.json");
     internal static readonly string StartMenuShortcut = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
         "Programs", "CodexS.lnk");

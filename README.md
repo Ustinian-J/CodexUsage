@@ -2,13 +2,14 @@
 
 CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows 托盘应用，用圆环/双条展示 Codex 5 小时与每周额度余量，并统计今日、近 7 天和累计 token。它还能提示任务运行、完成和未读状态，主窗口会把本机 Codex 对话和自动化任务整理成今日任务看板。
 
-> 当前版本为 `0.3.0`。项目使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
+> 当前版本为 `0.4.0`。项目使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
 
 ## 功能
 
 - 菜单栏实时显示 5 小时、7 天额度圆环，圆环中央显示剩余百分比。
 - 菜单栏右侧使用单一状态徽章：红色播放符号表示执行中，绿色勾表示空闲，灰色横线表示监控不可用；未读完成以独立黄色菱形角标闪烁，因此“执行中 + 未读”可同时表达。弹窗内保留带文字说明的红黄绿灯。
 - 增量读取 Codex 本机会话事件，在任务完成或中断后发送可选的 macOS 本地通知，并提供“全部已读”清除黄灯。
+- 可选监听 SSH 远程项目：在设置中填写 `~/.ssh/config` 主机别名后，Mac 与 Windows 版都会复用系统 OpenSSH，显示 `@主机`、项目名、运行/完成/中断状态，并在断线时显示不可用。
 - 展示额度重置时间，并支持剩余量/已用量口径和多种菜单栏密度。
 - 汇总单日、近 7 天和累计 token，细分未缓存输入、缓存输入与输出。
 - 从本机 Codex 线程和启用中的 automation 生成今日任务看板；今日对话进度按 `今日已归档对话 / 今日对话任务总数` 估算，定时任务不计入完成率。
@@ -31,13 +32,14 @@ CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows �
 这个仓库没有直接 fork 上游历史，而是从固定提交 `cc800ff7afa254237fd088cb63004390d6492a99` 逐文件审计后，以白名单方式导入当前源码。完整证据、历史风险和排除项见 [上游安全审计](docs/SECURITY_AUDIT.md)，来源与许可证见 [UPSTREAM.md](UPSTREAM.md)。
 
 - 无第三方 Swift、npm、Python、CocoaPods 或预编译框架依赖。
-- 不读取 `~/.codex/auth.json`、Keychain、浏览器 cookie、SSH key 或云凭据。
+- 不读取 `~/.codex/auth.json`、Keychain、浏览器 cookie 或云凭据；启用远程监听时由系统 OpenSSH 使用现有配置，CodexS 自身不打开、复制或保存 SSH key、密码。
 - 不上传 usage、对话、任务、路径或账户数据。
 - 任务监控只提取开始、完成和中断所需字段；即使日志行包含完成回复正文 `last_agent_message`，也会忽略且绝不保存、显示、通知或上传。
 - 唯一运行时公网请求是可选的 GitHub Release 元数据 `GET`；自动检查默认关闭。
 - 不静默下载、替换或执行更新；下载页面只能由用户主动打开。
 - CI 仅使用 GitHub 官方 Action，固定到完整提交哈希，权限为 `contents: read`，不读取 repository secrets。
-- `test-source-security.sh` 持续拒绝凭据读取、网络写请求、下载器、远程 shell、登录持久化、第三方依赖清单和预编译库。
+- `test-source-security.sh` 持续拒绝凭据读取、网络写请求、下载器、登录持久化、第三方依赖清单和预编译库；SSH 仅允许出现在经过固定参数审计的远程任务监听器中。
+- 远端解析器仅在 SSH 会话内存中运行，不安装服务、不写远端文件；只回传任务事件白名单元数据，绝不回传提示词、回答正文、工具参数、工具输出或 `last_agent_message`。
 - 低额度通知完全由 macOS 本地通知中心发送，只包含额度窗口、剩余百分比和重置时间。
 - 任务完成通知同样完全本地发送，只显示结果类型，不包含任务标题、项目路径或对话正文。
 - 每个 DMG 同时生成 SHA-256 文件，安装前应先校验。
@@ -79,7 +81,7 @@ Windows 可在 PowerShell 中用 `Get-FileHash CodexS-<version>-windows-x64.exe 
 - macOS 13 或更新版本。
 - 本机已安装并登录 Codex。
 - Codex 至少使用过一次，以生成本机状态数据库。
-- Windows 首版监控原生 Windows Codex 会话；仅存在于 WSL 内的会话暂不支持。
+- Windows 版监控原生 Windows Codex 会话，也可通过 SSH 监听装有 Python 3 的 Linux/macOS 远程主机；仅存在于本机 WSL 且未通过 SSH 配置的会话暂不支持。
 
 ## 从源码构建
 

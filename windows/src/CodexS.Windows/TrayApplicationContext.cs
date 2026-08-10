@@ -21,6 +21,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         dashboard.MarkAllReadRequested += monitor.MarkAllRead;
         dashboard.ResultOpened += id => { monitor.MarkRead(id); dashboard.ShowPanel(); };
         dashboard.RefreshRequested += () => _ = RefreshQuotaAsync();
+        dashboard.RemoteHostsSaved += monitor.SetRemoteHosts;
         singleInstance.ShowRequested += ShowFromBackgroundThread;
 
         tray.Text = "CodexS 正在启动";
