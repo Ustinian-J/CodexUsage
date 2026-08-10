@@ -21,7 +21,7 @@ internal static class Program
         if (!AppPaths.IsInstalledExecutable)
         {
             var choice = MessageBox.Show(
-                "是否将 CodexS 安装到当前用户并启动？\n\n应用只读取本机 Codex 用量与任务元数据，不读取登录凭据。\n选择“否”可仅运行一次。",
+                "是否将 CodexS 安装到当前用户并启动？\n\n应用读取本机 Codex 用量与任务元数据；启用 SSH 远程监听后只读取任务事件，不读取登录凭据或对话正文。\n选择“否”可仅运行一次。",
                 "安装 CodexS", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Information);
             if (choice == DialogResult.Cancel) return 0;
             if (choice == DialogResult.Yes)

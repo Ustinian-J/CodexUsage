@@ -171,6 +171,30 @@ enum CodexTaskActivitySelfTest {
         let completedLines = lineBuffer.append(Data((line[split...] + "\n").utf8))
         expect(completedLines.count == 1, "newline must release exactly one buffered JSON line")
 
+        expect(
+            CodexRemoteHost.parseList("codex, build-box\nCODEX") == ["codex", "build-box"],
+            "remote host aliases must be validated and deduplicated case-insensitively"
+        )
+        expect(CodexRemoteHost.validated("-oProxyCommand=bad") == nil, "SSH option injection must be rejected")
+        expect(CodexRemoteHost.validated("host;touch") == nil, "remote shell metacharacters must be rejected")
+
+        let remoteLine = """
+        {"kind":"event","event":"started","turn_id":"019fda07-3333-7777-8888-111111111111","occurred_at":1786000040,"thread_id":"remote-thread","title":"Remote build","project_name":"backend"}
+        """
+        let remoteEvent = RemoteCodexTaskEnvelope.parse(line: Data(remoteLine.utf8), host: "codex")
+        expect(remoteEvent?.metadata.sourceLabel == "codex", "remote events must retain their SSH source label")
+        expect(remoteEvent?.metadata.projectName == "backend", "remote events must retain the project basename")
+        if let remoteEvent {
+            var remoteReducer = CodexTaskActivityReducer(persisted: .empty)
+            _ = remoteReducer.apply(remoteEvent, origin: .baseline)
+            expect(
+                remoteReducer.removeRunningTasks(sourceLabel: "CODEX"),
+                "disabling a remote host must remove its running tasks case-insensitively"
+            )
+        } else {
+            failures.append("normalized remote task event must parse")
+        }
+
         if case .success = runReadOnlySQLiteJSON(
             sqlitePath: "/path/that/does/not/exist/sqlite3",
             dbPath: "/path/that/does/not/exist/state.sqlite",
@@ -194,6 +218,9 @@ enum CodexTaskActivitySelfTest {
             )
             persistence.save(saved)
             expect(persistence.load() == saved, "task activity persistence must round-trip")
+            let remotePersistence = CodexRemoteTaskCheckpointPersistence(defaults: defaults)
+            remotePersistence.save(["codex": base])
+            expect(remotePersistence.load()["codex"] == base, "remote recovery checkpoints must round-trip")
         } else {
             failures.append("could not create task activity UserDefaults suite")
         }

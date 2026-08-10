@@ -21,12 +21,16 @@ internal sealed class CodexSessionMonitor : IDisposable
     private readonly Dictionary<DateOnly, long> tokensByDay = [];
     private readonly HashSet<string> tokenFingerprints = new(StringComparer.Ordinal);
     private readonly StateStore stateStore = new();
+    private readonly RemoteHostStore remoteHostStore = new();
     private readonly TaskActivityReducer reducer;
+    private readonly Dictionary<string, RemoteCodexTaskMonitor> remoteMonitors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (bool Ready, string? Message)> remoteStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cancellation = new();
     private readonly DateTimeOffset startedAt = DateTimeOffset.Now;
     private Task? worker;
     private bool initialScanFinished;
     private bool taskMonitorReady;
+    private string? taskMonitorMessage = "正在读取 Codex 本地数据";
     private bool stateDirty;
     private QuotaWindow? fiveHour;
     private QuotaWindow? sevenDay;
@@ -39,6 +43,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     internal CodexSessionMonitor()
     {
         reducer = new TaskActivityReducer(stateStore.Load(), startedAt);
+        SynchronizeRemoteHosts(remoteHostStore.Hosts, persist: false);
     }
 
     internal void Start()
@@ -50,6 +55,14 @@ internal sealed class CodexSessionMonitor : IDisposable
     {
         get { lock (gate) return MakeSnapshot(); }
     }
+
+    internal string RemoteHostsText
+    {
+        get { lock (gate) return string.Join(", ", remoteMonitors.Keys.Order(StringComparer.OrdinalIgnoreCase)); }
+    }
+
+    internal void SetRemoteHosts(string rawValue) =>
+        SynchronizeRemoteHosts(RemoteHostName.Parse(rawValue), persist: true);
 
     internal void SetQuota(QuotaWindow? five, QuotaWindow? seven, bool stale, string? message)
     {
@@ -108,7 +121,7 @@ internal sealed class CodexSessionMonitor : IDisposable
             lock (gate)
             {
                 taskMonitorReady = false;
-                statusMessage = "未找到 Codex 本地会话目录";
+                taskMonitorMessage = "未找到 Codex 本地会话目录";
                 PublishLocked();
             }
             return;
@@ -131,7 +144,7 @@ internal sealed class CodexSessionMonitor : IDisposable
                 reducer.FinishInitialScan(startedAt);
                 initialScanFinished = true;
                 taskMonitorReady = true;
-                statusMessage = null;
+                taskMonitorMessage = null;
                 stateStore.Save(reducer.Persisted());
                 stateDirty = false;
             }
@@ -246,7 +259,7 @@ internal sealed class CodexSessionMonitor : IDisposable
         lock (gate)
         {
             completion = reducer.Apply(new TaskEvent(
-                identity, cursor.SessionId, cursor.Project, occurredAt, kind), appendedLive);
+                identity, cursor.SessionId, cursor.Project, null, occurredAt, kind), appendedLive);
             stateDirty = true;
         }
         if (completion is not null) CompletionArrived?.Invoke(completion);
@@ -276,9 +289,13 @@ internal sealed class CodexSessionMonitor : IDisposable
         var todayTokens = tokensByDay.GetValueOrDefault(today);
         long sevenTokens = 0;
         for (var offset = 0; offset < 7; offset++) sevenTokens += tokensByDay.GetValueOrDefault(today.AddDays(-offset));
+        var remoteFailure = remoteStatus.Values.FirstOrDefault(value => !value.Ready);
+        var allSourcesReady = taskMonitorReady && remoteStatus.Values.All(value => value.Ready);
+        var monitorMessage = taskMonitorReady ? remoteFailure.Message : taskMonitorMessage;
         return new UsageSnapshot(
             fiveHour, sevenDay, todayTokens, sevenTokens, tokensByDay.Values.Sum(),
-            reducer.Running, reducer.Results, taskMonitorReady, quotaStale, statusMessage);
+            reducer.Running, reducer.Results, allSourcesReady, monitorMessage,
+            remoteMonitors.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray(), quotaStale, statusMessage);
     }
 
     private void PublishLocked() => SnapshotChanged?.Invoke(MakeSnapshot());
@@ -302,9 +319,82 @@ internal sealed class CodexSessionMonitor : IDisposable
     internal static long TokenDelta(long previous, long current) =>
         current >= previous ? current - previous : current;
 
+    private void SynchronizeRemoteHosts(IReadOnlyList<string> hosts, bool persist)
+    {
+        List<RemoteCodexTaskMonitor> removed = [];
+        List<RemoteCodexTaskMonitor> added = [];
+        lock (gate)
+        {
+            var desired = new HashSet<string>(hosts, StringComparer.OrdinalIgnoreCase);
+            foreach (var host in remoteMonitors.Keys.Where(host => !desired.Contains(host)).ToArray())
+            {
+                removed.Add(remoteMonitors[host]);
+                remoteMonitors.Remove(host);
+                remoteStatus.Remove(host);
+                reducer.RemoveSource(host);
+            }
+            foreach (var host in hosts)
+            {
+                if (remoteMonitors.ContainsKey(host)) continue;
+                var monitor = new RemoteCodexTaskMonitor(host, remoteHostStore.Checkpoint(host));
+                monitor.EventArrived += (taskEvent, origin) => RemoteEventArrived(taskEvent, origin);
+                monitor.Ready += checkpoint => RemoteReady(host, checkpoint);
+                monitor.Unavailable += message => RemoteUnavailable(host, message);
+                remoteMonitors[host] = monitor;
+                remoteStatus[host] = (false, $"正在连接远程任务主机 {host}");
+                added.Add(monitor);
+            }
+            if (persist) remoteHostStore.SaveHosts(hosts);
+            stateStore.Save(reducer.Persisted());
+            PublishLocked();
+        }
+        foreach (var monitor in removed) monitor.Dispose();
+        foreach (var monitor in added) monitor.Start();
+    }
+
+    private void RemoteEventArrived(TaskEvent taskEvent, TaskEventOrigin origin)
+    {
+        TaskResult? completion;
+        lock (gate)
+        {
+            if (taskEvent.Source is not null && !remoteMonitors.ContainsKey(taskEvent.Source)) return;
+            completion = reducer.Apply(taskEvent, origin);
+            stateStore.Save(reducer.Persisted());
+            stateDirty = false;
+            PublishLocked();
+        }
+        if (completion is not null) CompletionArrived?.Invoke(completion);
+    }
+
+    private void RemoteReady(string host, DateTimeOffset checkpoint)
+    {
+        lock (gate)
+        {
+            if (!remoteMonitors.ContainsKey(host)) return;
+            remoteStatus[host] = (true, null);
+            remoteHostStore.SaveCheckpoint(host, checkpoint);
+            reducer.RemoveStaleRunning(DateTimeOffset.Now.AddHours(-12));
+            stateStore.Save(reducer.Persisted());
+            stateDirty = false;
+            PublishLocked();
+        }
+    }
+
+    private void RemoteUnavailable(string host, string message)
+    {
+        lock (gate)
+        {
+            if (!remoteMonitors.ContainsKey(host)) return;
+            remoteStatus[host] = (false, message);
+            PublishLocked();
+        }
+    }
+
     public void Dispose()
     {
         cancellation.Cancel();
+        foreach (var monitor in remoteMonitors.Values) monitor.Dispose();
+        remoteMonitors.Clear();
         try { worker?.Wait(TimeSpan.FromSeconds(2)); } catch { }
         cancellation.Dispose();
     }

@@ -28,14 +28,17 @@ CodexS reads:
 - `~/.claude/tasks/**/*.json` task status/title metadata
 - optional `~/Library/Caches/CodexUsage/claude-code/statusline-snapshot.json`
 - optional `~/Library/Caches/CodexUsage/update-check.json` for cached GitHub Release update metadata
+- optional SSH remote Codex task metadata: host alias, task/thread IDs, thread title, project basename, event type, timestamp, outcome, and read state
 
 Task activity persistence uses the legacy-compatible `CodexUsage.taskActivity.v1` local `UserDefaults` key and stores only task IDs, thread titles, project basenames, outcomes, timestamps, read state, and a recovery watermark. It deliberately ignores and never persists or exposes `last_agent_message`. CodexS keeps the existing `com.ustinianj.codexusage` bundle ID and `~/Library/Caches/CodexUsage/` cache namespace so an upgrade does not lose settings or repeat alerts.
+
+Remote monitoring is opt-in and stores only validated SSH config aliases plus per-host recovery timestamps. CodexS launches the platform OpenSSH client with batch authentication, strict host-key checking, connection timeout, and keepalive limits. The host value is passed as a separate validated argument, never interpolated into a local shell. A fixed Python 3 parser runs in memory on the remote host, opens Codex state/session files read-only, emits only allowlisted task metadata, and does not create or modify remote files. OpenSSH may use keys or an agent configured by the user, but CodexS never opens, copies, logs, or persists those credentials.
 
 It should not upload local usage, transcript, task, thread, account, or path data to a third-party service. Claude Code transcript parsing must not store prompt text, assistant response text, tool arguments, or tool output.
 
 ## Network Scope
 
-CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexUsage/releases` during automatic checks when enabled or when the user manually checks for updates.
+CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexUsage/releases` during automatic checks when enabled or when the user manually checks for updates. When the user explicitly configures SSH hosts, CodexS also opens long-lived encrypted SSH connections to those aliases solely for remote task events.
 
 Update requests must not include local usage, transcript, task, thread, account, path, prompt, response, tool argument, or tool output data. The update checker may send standard HTTPS headers such as `User-Agent` and `If-None-Match` for ETag caching.
 
@@ -57,6 +60,6 @@ Reset-credit details are read only from the official local Codex app-server resp
 - CI permissions are limited to `contents: read` and CI does not consume repository secrets.
 - CI may use only GitHub-owned actions pinned to full commit SHAs.
 - `scripts/test-ci-security.sh` enforces the current action allowlist and rejects floating tags.
-- `scripts/test-source-security.sh` rejects credential access, network write methods, downloaders, remote shells, persistence helpers, third-party dependency manifests, and precompiled libraries.
+- `scripts/test-source-security.sh` rejects credential access, network write methods, downloaders, persistence helpers, third-party dependency manifests, and precompiled libraries. It permits SSH only in the reviewed remote-task monitor and locks its executable, host validation, batch mode, strict host-key checking, and keepalive options.
 - Release artifacts include SHA-256 checksums and are verified for DMG integrity, Mach-O architecture, and code signature before installation.
 - Developer ID notarization automation is deliberately absent until it receives a separate credential and workflow review.

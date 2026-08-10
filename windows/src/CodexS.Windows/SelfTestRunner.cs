@@ -10,6 +10,11 @@ internal static class SelfTestRunner
         {
             Expect(CodexSessionMonitor.TokenDelta(100, 145) == 45, "token cumulative delta");
             Expect(CodexSessionMonitor.TokenDelta(145, 20) == 20, "token counter reset");
+            Expect(RemoteHostName.Validate("codex") == "codex", "safe SSH alias");
+            Expect(RemoteHostName.Validate("-oProxyCommand=bad") is null, "SSH option injection rejected");
+            Expect(RemoteHostName.Validate("host;touch") is null, "remote shell metacharacters rejected");
+            Expect(RemoteHostName.Parse("codex, build-box CODEX").SequenceEqual(["codex", "build-box"]),
+                "remote aliases deduplicated");
 
             using var rateDocument = JsonDocument.Parse("""
                 {"rateLimitsByLimitId":{"codex":{"secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":1800007200},"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1800003600}}}}
@@ -20,8 +25,8 @@ internal static class SelfTestRunner
 
             var now = DateTimeOffset.Now;
             var reducer = new TaskActivityReducer(new PersistedState(), now);
-            var first = new TaskEvent("turn-1", "session-a", "project", now.AddMinutes(1), TaskEventKind.Started);
-            var second = new TaskEvent("turn-2", "session-a", "project", now.AddMinutes(2), TaskEventKind.Started);
+            var first = new TaskEvent("turn-1", "session-a", "project", null, now.AddMinutes(1), TaskEventKind.Started);
+            var second = new TaskEvent("turn-2", "session-a", "project", null, now.AddMinutes(2), TaskEventKind.Started);
             reducer.Apply(first, appendedLive: false);
             reducer.Apply(second, appendedLive: false);
             Expect(reducer.Running.Count == 1 && reducer.Running[0].Id == "turn-2", "new turn replaces stale start");
@@ -29,10 +34,16 @@ internal static class SelfTestRunner
             Expect(completion is not null && reducer.Results.Count == 1, "first-scan completion after watermark is live");
             Expect(reducer.MarkAllRead() && reducer.Results[0].ReadAt is not null, "mark all read");
 
+            var remote = new TaskEvent("remote-turn", "remote-session", "backend", "codex",
+                now.AddMinutes(4), TaskEventKind.Started);
+            reducer.Apply(remote, TaskEventOrigin.Baseline);
+            reducer.RemoveSource("CODEX");
+            Expect(reducer.Running.All(item => item.Source is null), "disabled remote running tasks removed");
+
             var longHistory = new TaskActivityReducer(new PersistedState(), now);
             for (var index = 0; index < 8_300; index++)
             {
-                var old = new TaskEvent($"old-{index}", $"session-{index}", "project",
+                var old = new TaskEvent($"old-{index}", $"session-{index}", "project", null,
                     now.AddDays(-2).AddSeconds(index), TaskEventKind.Completed);
                 Expect(longHistory.Apply(old, appendedLive: false) is null, "old replay must not notify");
             }
