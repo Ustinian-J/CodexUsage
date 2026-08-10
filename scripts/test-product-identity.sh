@@ -14,7 +14,7 @@ grep -q '^APP_NAME := CodexS$' Makefile
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist \
   | grep -qx '0.4.0'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist \
-  | grep -qx '6'
+  | grep -qx '7'
 grep -q '当前版本为 `0.4.0`' README.md
 grep -q 'The current version is `0.4.0`' README.en.md
 grep -q 'owner: String = "Ustinian-J"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
