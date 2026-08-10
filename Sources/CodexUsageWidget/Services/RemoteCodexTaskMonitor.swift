@@ -109,8 +109,7 @@ final class RemoteCodexTaskMonitor {
     }
 
     func stop() {
-        queue.async { [weak self] in
-            guard let self else { return }
+        queue.sync {
             self.stopped = true
             self.restartWorkItem?.cancel()
             self.restartWorkItem = nil
