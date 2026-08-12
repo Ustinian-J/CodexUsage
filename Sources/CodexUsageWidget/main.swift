@@ -651,12 +651,14 @@ final class UsageStore: ObservableObject {
         refreshGeneration &+= 1
         let generation = refreshGeneration
         let preference = statisticsPreference
+        let allowedScopes = Set(visibleRuntimeScopes)
         isRefreshing = true
 
         DispatchQueue.global(qos: .utility).async {
             let multiSnapshot = MultiRuntimeUsageReader().load(
                 statisticsPreference: preference,
-                generation: generation
+                generation: generation,
+                allowedScopes: allowedScopes
             )
             DispatchQueue.main.async {
                 if generation == self.refreshGeneration,
@@ -711,7 +713,10 @@ final class UsageStore: ObservableObject {
     }
 
     private func statisticsCacheKey(for preference: StatisticsTimeZonePreference) -> String {
-        StatisticsContext(preference: preference, now: Date()).resolvedIdentifier
+        runtimeScopedStatisticsCacheKey(
+            resolvedIdentifier: StatisticsContext(preference: preference, now: Date()).resolvedIdentifier,
+            scopes: visibleRuntimeScopes
+        )
     }
 
     private func validCachedStatisticsSnapshot(forKey key: String) -> MultiRuntimeUsageSnapshot? {
@@ -727,7 +732,10 @@ final class UsageStore: ObservableObject {
     }
 
     private func cacheStatisticsSnapshot(_ snapshot: MultiRuntimeUsageSnapshot) {
-        let key = snapshot.statisticsIdentity.resolvedIdentifier
+        let key = runtimeScopedStatisticsCacheKey(
+            resolvedIdentifier: snapshot.statisticsIdentity.resolvedIdentifier,
+            scopes: snapshot.runtimes.map(\.scope)
+        )
         statisticsSnapshotCache[key] = StatisticsSnapshotCacheEntry(snapshot: snapshot, cachedAt: Date())
         statisticsSnapshotCacheOrder.removeAll { $0 == key }
         statisticsSnapshotCacheOrder.append(key)
@@ -777,10 +785,29 @@ final class UsageStore: ObservableObject {
     }
 
     func updateVisibleRuntimeScopes(_ scopes: [RuntimeScope]) {
-        visibleRuntimeScopes = scopes.isEmpty ? RuntimeScope.allCases : scopes
-        if !visibleRuntimeScopes.contains(selectedRuntimeScope) {
-            selectRuntime(visibleRuntimeScopes.first ?? selectedRuntimeScope)
-        }
+        let nextScopes = scopes.isEmpty ? RuntimeScope.allCases : scopes
+        guard nextScopes != visibleRuntimeScopes else { return }
+        visibleRuntimeScopes = nextScopes
+        let allowed = Set(nextScopes)
+        let filteredRuntimes = runtimeSnapshots.filter { allowed.contains($0.scope) }
+        let aggregate = AgentUsageAggregator().aggregate(filteredRuntimes, at: Date())
+        let filteredSnapshot = MultiRuntimeUsageSnapshot(
+            refreshedAt: multiRuntimeSnapshot.refreshedAt,
+            runtimes: filteredRuntimes,
+            aggregate: aggregate,
+            statisticsIdentity: multiRuntimeSnapshot.statisticsIdentity
+        )
+        let nextScope = filteredSnapshot.defaultScope(
+            preferred: selectedRuntimeScope,
+            allowedScopes: nextScopes
+        )
+        multiRuntimeSnapshot = filteredSnapshot
+        runtimeSnapshots = filteredRuntimes
+        selectedRuntimeScope = nextScope
+        snapshot = filteredSnapshot.displaySnapshot(for: nextScope)
+        guard hasStarted else { return }
+        refreshGeneration &+= 1
+        refresh(queueIfBusy: true)
     }
 
     func setMainWindowActive(_ isActive: Bool) {
@@ -914,6 +941,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func applyTaskBoard(_ taskBoard: TaskBoard?, for scope: RuntimeScope) {
+        guard visibleRuntimeScopes.contains(scope) else { return }
         guard let index = runtimeSnapshots.firstIndex(where: { $0.scope == scope }) else {
             guard snapshot.taskBoard?.columns != taskBoard?.columns else { return }
             snapshot = snapshot.replacingTaskBoard(taskBoard)
@@ -1873,8 +1901,7 @@ final class CodexUsageReader {
     }
 
     private func skillStaticInfo(for path: String) -> SkillStaticInfo {
-        let url = URL(fileURLWithPath: path)
-        guard let data = try? Data(contentsOf: url) else {
+        guard let data = SkillFileAccessPolicy.read(path: path) else {
             return SkillStaticInfo(tokenEstimate: nil, byteCount: nil)
         }
 
@@ -2531,14 +2558,11 @@ private func canonicalSkillPath(_ rawPath: String) -> String? {
 
     guard expanded.hasPrefix("/") else { return nil }
     let standardized = (expanded as NSString).standardizingPath
-    if FileManager.default.fileExists(atPath: standardized) {
-        return standardized
+    if let validated = SkillFileAccessPolicy.validatedPath(standardized) {
+        return validated
     }
     if let equivalentPath = equivalentCachedSkillPath(for: standardized) {
         return equivalentPath
-    }
-    if standardized.hasPrefix(home + "/") {
-        return standardized
     }
     return nil
 }
@@ -2585,7 +2609,7 @@ private func equivalentCachedSkillPath(for path: String) -> String? {
             return leftDate > rightDate
         }
 
-    return candidates.first?.path
+    return candidates.compactMap { SkillFileAccessPolicy.validatedPath($0.path) }.first
 }
 
 private func skillName(from path: String) -> String {
@@ -3187,10 +3211,6 @@ enum DashboardTab: String, CaseIterable, Equatable, Identifiable {
     var id: String { rawValue }
 }
 
-final class WindowPresentationState: ObservableObject {
-    @Published var isPinnedToFront = false
-}
-
 struct UsageWidgetView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
@@ -3684,51 +3704,6 @@ struct SectionTitle: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
         }
-    }
-}
-
-struct LanguageSwitch: View {
-    let language: WidgetLanguage
-    let onSelect: (WidgetLanguage) -> Void
-
-    var body: some View {
-        Picker("", selection: Binding(
-            get: { language },
-            set: { onSelect($0) }
-        )) {
-            Text("中").tag(WidgetLanguage.zh)
-            Text("EN").tag(WidgetLanguage.en)
-        }
-        .labelsHidden()
-        .pickerStyle(.segmented)
-        .controlSize(.mini)
-        .frame(width: 70)
-    }
-}
-
-struct ThemeSwitch: View {
-    let themeMode: WidgetThemeMode
-    let language: WidgetLanguage
-    let onSelect: (WidgetThemeMode) -> Void
-
-    var body: some View {
-        Picker("", selection: Binding(
-            get: { themeMode },
-            set: { onSelect($0) }
-        )) {
-            Image(systemName: "circle.lefthalf.filled")
-                .tag(WidgetThemeMode.system)
-            Image(systemName: "sun.max.fill")
-                .tag(WidgetThemeMode.light)
-            Image(systemName: "moon.fill")
-                .tag(WidgetThemeMode.dark)
-        }
-        .labelsHidden()
-        .pickerStyle(.segmented)
-        .controlSize(.mini)
-        .frame(width: 86)
-        .help(language.text("外观：自动、浅色、深色", "Appearance: system, light, dark"))
-        .accessibilityLabel(language.text("外观模式", "Appearance mode"))
     }
 }
 
@@ -4633,34 +4608,6 @@ extension View {
 
     func cardBackground(cornerRadius: CGFloat = 10, elevated: Bool = false) -> some View {
         modifier(CardBackgroundModifier(cornerRadius: cornerRadius, elevated: elevated))
-    }
-}
-
-struct GaugeRing: View {
-    let percent: Double
-    let available: Bool
-    let lineWidth: CGFloat
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(WidgetPalette.surfaceTrack, lineWidth: lineWidth)
-            Circle()
-                .trim(from: 0, to: available ? CGFloat(max(0, min(1, percent / 100))) : 0.0)
-                .stroke(
-                    AngularGradient(
-                        colors: [
-                            WidgetPalette.brandPrimary,
-                            WidgetPalette.brandPrimaryLight,
-                            WidgetPalette.brandHighlight,
-                            WidgetPalette.brandPrimary
-                        ],
-                        center: .center
-                    ),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-        }
     }
 }
 
@@ -6436,60 +6383,6 @@ private struct QuotaPaceSummary: View {
     }
 }
 
-struct DailyTokenChart: View {
-    let buckets: [DailyTokenBucket]
-    let language: WidgetLanguage
-
-    private var maxTokens: Int64 {
-        max(buckets.map(\.tokens).max() ?? 0, 1)
-    }
-
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            ForEach(buckets) { bucket in
-                DailyTokenBar(bucket: bucket, maxTokens: maxTokens, language: language)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 112)
-    }
-}
-
-struct DailyTokenBar: View {
-    let bucket: DailyTokenBucket
-    let maxTokens: Int64
-    let language: WidgetLanguage
-
-    private var barHeight: CGFloat {
-        let ratio = Double(bucket.tokens) / Double(maxTokens)
-        return max(4, CGFloat(ratio) * 54)
-    }
-
-    var body: some View {
-        VStack(spacing: 5) {
-            Text(formatTokens(bucket.tokens))
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .foregroundStyle(.secondary)
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(WidgetPalette.surfaceTrack)
-                    .frame(height: 58)
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(bucket.tokens == 0 ? WidgetPalette.dataZero : WidgetPalette.brandPrimary.opacity(bucket.label == "今天" ? 1 : 0.58))
-                    .frame(height: barHeight)
-            }
-            Text(localizedDayLabel(bucket.label, language: language))
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(bucket.label == "今天" ? .primary : .secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
 struct DetailedTokenMetricCard: View {
     let title: String
     let systemName: String
@@ -6784,86 +6677,6 @@ struct QuotaValueProgressBar: View {
 
         let raw = width * CGFloat(max(0, min(1, fraction)))
         return min(max(raw, 0), width)
-    }
-}
-
-struct TokenMetricCard: View {
-    let title: String
-    let value: String
-    let tint: Color
-    let language: WidgetLanguage
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 7, height: 7)
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Text(value)
-                .font(.system(size: 21, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-            Text(language.text("Tokens", "Tokens"))
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .padding(dashboardCardPadding)
-        .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
-        .cardBackground(cornerRadius: dashboardCardCornerRadius)
-    }
-}
-
-struct MiniTrendCard: View {
-    let buckets: [DailyTokenBucket]
-    let language: WidgetLanguage
-
-    private var maxTokens: Int64 {
-        max(buckets.map(\.tokens).max() ?? 0, 1)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(language.text("近 7 天使用趋势", "7-day trend"))
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            HStack(alignment: .bottom, spacing: 6) {
-                ForEach(buckets) { bucket in
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(bucket.tokens == 0 ? WidgetPalette.dataZero : WidgetPalette.brandPrimary.opacity(bucket.label == "今天" ? 1 : 0.55))
-                        .frame(width: 12, height: miniBarHeight(bucket.tokens))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-
-            HStack {
-                Text(language.text("一", "M"))
-                Spacer()
-                Text(language.text("三", "W"))
-                Spacer()
-                Text(language.text("五", "F"))
-                Spacer()
-                Text(language.text("今", "Now"))
-            }
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(.secondary)
-        }
-        .padding(dashboardCardPadding)
-        .frame(width: 132, alignment: .leading)
-        .frame(minHeight: 78, alignment: .leading)
-        .cardBackground(cornerRadius: dashboardCardCornerRadius)
-    }
-
-    private func miniBarHeight(_ tokens: Int64) -> CGFloat {
-        let ratio = Double(tokens) / Double(maxTokens)
-        return max(6, CGFloat(ratio) * 34)
     }
 }
 
@@ -8868,13 +8681,6 @@ private func localizedTaskColumnTitle(_ kind: TaskColumnKind, language: WidgetLa
     }
 }
 
-private func localizedDayLabel(_ label: String, language: WidgetLanguage) -> String {
-    if label == "今天" {
-        return language.text("今天", "Today")
-    }
-    return label
-}
-
 private func localizedTaskDetail(_ detail: String, language: WidgetLanguage) -> String {
     guard !language.isChinese else { return detail }
     return detail
@@ -8973,212 +8779,6 @@ func localizedResetCreditStatus(_ status: RateLimitResetCreditStatus, language: 
     }
 }
 
-private func isoString(_ date: Date?) -> String? {
-    guard let date else { return nil }
-    let formatter = ISO8601DateFormatter()
-    return formatter.string(from: date)
-}
-
-private func jsonValue<T>(_ value: T?) -> Any {
-    value.map { $0 as Any } ?? NSNull()
-}
-
-private func resetCreditJSONObject(_ credit: RateLimitResetCredit) -> [String: Any] {
-    [
-        "id": credit.id,
-        "title": jsonValue(credit.title),
-        "description": jsonValue(credit.detail),
-        "grantedAt": jsonValue(isoString(credit.grantedAt)),
-        "expiresAt": jsonValue(isoString(credit.expiresAt)),
-        "resetType": credit.resetType,
-        "status": credit.status.rawValue
-    ] as [String: Any]
-}
-
-private func jsonObject(_ usage: PricedTokenUsage) -> [String: Any] {
-    [
-        "estimatedCostUSD": usage.estimatedCostUSD,
-        "tokens": [
-            "inputTokens": usage.tokens.inputTokens,
-            "cachedInputTokens": usage.tokens.billableCachedInputTokens,
-            "uncachedInputTokens": usage.tokens.uncachedInputTokens,
-            "outputTokens": usage.tokens.outputTokens,
-            "reasoningOutputTokens": usage.tokens.reasoningOutputTokens,
-            "totalTokens": usage.tokens.visibleTotalTokens
-        ] as [String: Any]
-    ]
-}
-
-private func jsonObject(_ project: ProjectUsage) -> [String: Any] {
-    [
-        "name": project.name,
-        "fullPath": project.fullPath,
-        "tokens": project.tokens,
-        "estimatedCostUSD": jsonValue(project.estimatedCostUSD),
-        "threadCount": project.threadCount,
-        "lastActiveAt": jsonValue(isoString(project.lastActiveAt)),
-        "sourceQuality": project.sourceQuality.rawValue
-    ] as [String: Any]
-}
-
-private func jsonObject(_ tool: ToolUsage) -> [String: Any] {
-    [
-        "name": tool.name,
-        "category": tool.category,
-        "callCount": tool.callCount,
-        "estimatedTokens": jsonValue(tool.estimatedTokens),
-        "estimatedCostUSD": jsonValue(tool.estimatedCostUSD)
-    ] as [String: Any]
-}
-
-private func jsonObject(_ skill: SkillUsage) -> [String: Any] {
-    [
-        "name": skill.name,
-        "path": skill.path,
-        "sourceLabel": skill.sourceLabel,
-        "loadCount": skill.loadCount,
-        "threadCount": skill.threadCount,
-        "staticTokenEstimate": jsonValue(skill.staticTokenEstimate),
-        "staticByteCount": jsonValue(skill.staticByteCount),
-        "lastLoadedAt": jsonValue(isoString(skill.lastLoadedAt))
-    ] as [String: Any]
-}
-
-private func dumpJSON(_ snapshot: UsageSnapshot) {
-    var object: [String: Any] = [
-        "refreshedAt": isoString(snapshot.refreshedAt) ?? "",
-        "messages": snapshot.messages
-    ]
-
-    if let account = snapshot.account {
-        object["account"] = [
-            "type": account.type,
-            "planType": jsonValue(account.planType),
-            "emailPresent": account.emailPresent
-        ] as [String: Any]
-    }
-
-    if let primary = snapshot.fiveHourQuota {
-        object["primary"] = [
-            "usedPercent": primary.usedPercent,
-            "remainingPercent": primary.remainingPercent,
-            "windowDurationMins": jsonValue(primary.windowDurationMins),
-            "resetsAt": jsonValue(isoString(primary.resetsAt))
-        ] as [String: Any]
-    }
-
-    if let secondary = snapshot.sevenDayQuota {
-        object["secondary"] = [
-            "usedPercent": secondary.usedPercent,
-            "remainingPercent": secondary.remainingPercent,
-            "windowDurationMins": jsonValue(secondary.windowDurationMins),
-            "resetsAt": jsonValue(isoString(secondary.resetsAt))
-        ] as [String: Any]
-    }
-
-    if let credits = snapshot.credits {
-        object["credits"] = [
-            "hasCredits": credits.hasCredits,
-            "unlimited": credits.unlimited,
-            "balance": jsonValue(credits.balance),
-            "resetCredits": jsonValue(credits.resetCredits?.availableCount),
-            "resetCreditDetailsProvided": credits.resetCredits?.detailsProvided ?? false,
-            "resetCreditDetails": credits.resetCredits?.credits.map { resetCreditJSONObject($0) } ?? []
-        ] as [String: Any]
-    }
-
-    if let local = snapshot.local {
-        var localObject: [String: Any] = [
-            "todayTokens": local.todayTokens,
-            "sevenDayTokens": local.sevenDayTokens,
-            "lifetimeTokens": local.lifetimeTokens,
-            "threadCount": local.threadCount,
-            "lastUpdatedAt": jsonValue(isoString(local.lastUpdatedAt)),
-            "dailyBuckets": local.dailyBuckets.map { bucket in
-                [
-                    "day": bucket.id,
-                    "label": bucket.label,
-                    "tokens": bucket.tokens
-                ] as [String: Any]
-            }
-        ]
-
-        if let detailed = local.detailedUsage {
-            localObject["detailedUsage"] = [
-                "today": jsonObject(detailed.today),
-                "sevenDay": jsonObject(detailed.sevenDay),
-                "month": jsonObject(detailed.month),
-                "lifetime": jsonObject(detailed.lifetime),
-                "parsedFileCount": detailed.parsedFileCount,
-                "tokenEventCount": detailed.tokenEventCount
-            ] as [String: Any]
-        }
-
-        if let trend = local.usageTrend {
-            localObject["usageTrend"] = [
-                "sourceQuality": trend.sourceQuality.rawValue,
-                "dayCount": trend.dayBuckets.count,
-                "activeDayCount": trend.activeDayCount,
-                "sevenDay": jsonObject(trend.summary.sevenDay),
-                "dailyAverageTokens": trend.summary.dailyAverageTokens,
-                "peakDay": trend.summary.peakDay.map { bucket in
-                    [
-                        "day": bucket.id,
-                        "tokens": bucket.tokens,
-                        "estimatedCostUSD": bucket.usage.estimatedCostUSD
-                    ] as [String: Any]
-                } ?? NSNull(),
-                "changePercent": jsonValue(trend.summary.changePercent),
-                "isNewActivity": trend.summary.isNewActivity,
-                "month": jsonObject(trend.month),
-                "projectedMonthCostUSD": jsonValue(trend.projectedMonthCostUSD)
-            ] as [String: Any]
-        }
-
-        if let projectBoard = local.projectBoard {
-            localObject["projectBoard"] = [
-                "recentProjects": projectBoard.recentProjects.prefix(8).map { jsonObject($0) },
-                "allProjects": projectBoard.allProjects.prefix(8).map { jsonObject($0) }
-            ] as [String: Any]
-        }
-
-        localObject["toolUsages"] = local.toolUsages.prefix(20).map { jsonObject($0) }
-        localObject["skillUsages"] = local.skillUsages.prefix(20).map { jsonObject($0) }
-
-        object["local"] = localObject
-    }
-
-    if let taskBoard = snapshot.taskBoard {
-        object["taskBoard"] = [
-            "refreshedAt": isoString(taskBoard.refreshedAt) ?? "",
-            "totalCount": taskBoard.totalCount,
-            "columns": taskBoard.columns.map { column in
-                [
-                    "id": column.id.rawValue,
-                    "title": column.title,
-                    "count": column.count,
-                    "items": column.items.map { item in
-                        [
-                            "id": item.id,
-                            "code": item.code,
-                            "title": item.title,
-                            "detail": item.detail,
-                            "chip": item.chip,
-                            "updatedAt": jsonValue(isoString(item.updatedAt)),
-                            "tokens": jsonValue(item.tokens)
-                        ] as [String: Any]
-                    }
-                ] as [String: Any]
-            }
-        ] as [String: Any]
-    }
-
-    if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
-       let text = String(data: data, encoding: .utf8) {
-        print(text)
-    }
-}
-
 private func fourCharCode(_ value: String) -> OSType {
     value.utf8.reduce(0) { result, byte in
         (result << 8) + OSType(byte)
@@ -9190,18 +8790,8 @@ func debugLog(_ message: String) {
 
     let formatter = ISO8601DateFormatter()
     let line = "\(formatter.string(from: Date())) \(message)\n"
-    let url = URL(fileURLWithPath: "/tmp/codexusage.log")
-
     guard let data = line.data(using: .utf8) else { return }
-
-    if FileManager.default.fileExists(atPath: url.path),
-       let handle = try? FileHandle(forWritingTo: url) {
-        handle.seekToEndOfFile()
-        handle.write(data)
-        try? handle.close()
-    } else {
-        try? data.write(to: url, options: .atomic)
-    }
+    _ = SecureDebugLogWriter.append(data)
 }
 
 private func firstExecutablePath(_ paths: [String]) -> String? {
@@ -10151,6 +9741,10 @@ struct CodexSMain {
             exit(RuntimeResetTimesSelfTest.run() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-runtime-provider-scopes") {
+            exit(RuntimeProviderScopeSelfTest.run() ? 0 : 1)
+        }
+
         if CommandLine.arguments.contains("--self-test-updates") {
             exit(AppUpdateSelfTest.run() ? 0 : 1)
         }
@@ -10165,6 +9759,10 @@ struct CodexSMain {
 
         if CommandLine.arguments.contains("--self-test-task-activity") {
             exit(CodexTaskActivitySelfTest.run() ? 0 : 1)
+        }
+
+        if CommandLine.arguments.contains("--self-test-local-security-boundaries") {
+            exit(LocalSecurityBoundarySelfTest.run() ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-quota-pace") {

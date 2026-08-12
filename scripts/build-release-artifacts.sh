@@ -20,8 +20,10 @@ make build >/dev/null
 build/CodexS.app/Contents/MacOS/CodexS --self-test-statistics-time-zone
 build/CodexS.app/Contents/MacOS/CodexS --self-test-status-item
 build/CodexS.app/Contents/MacOS/CodexS --self-test-rate-limits
+build/CodexS.app/Contents/MacOS/CodexS --self-test-runtime-provider-scopes
 build/CodexS.app/Contents/MacOS/CodexS --self-test-task-progress
 build/CodexS.app/Contents/MacOS/CodexS --self-test-task-activity
+build/CodexS.app/Contents/MacOS/CodexS --self-test-local-security-boundaries
 build/CodexS.app/Contents/MacOS/CodexS --self-test-quota-pace
 build/CodexS.app/Contents/MacOS/CodexS --self-test-quota-alerts
 build/CodexS.app/Contents/MacOS/CodexS --self-test-particle-animation

@@ -2,23 +2,105 @@ import Combine
 import Foundation
 
 struct CodexJSONLineBuffer {
+    static let defaultMaximumLineBytes = 8 * 1024 * 1024
+    private static let retainedCapacityLimit = 128 * 1024
+
+    private let maximumLineBytes: Int
     private var buffer = Data()
+    private var discardingOversizedLine = false
+    private(set) var releasedLargeBufferCount = 0
+
+    init(maximumLineBytes: Int = Self.defaultMaximumLineBytes) {
+        self.maximumLineBytes = max(1, maximumLineBytes)
+    }
+
+    var bufferedByteCount: Int { buffer.count }
 
     mutating func append(_ data: Data) -> [Data] {
-        buffer.append(data)
         var lines: [Data] = []
-        while let newline = buffer.firstIndex(of: 10) {
-            let line = buffer.subdata(in: buffer.startIndex..<newline)
-            buffer.removeSubrange(buffer.startIndex...newline)
-            if !line.isEmpty {
-                lines.append(line)
+        var segmentStart = data.startIndex
+        var index = segmentStart
+
+        while index < data.endIndex {
+            guard data[index] == 10 else {
+                index = data.index(after: index)
+                continue
+            }
+
+            if !discardingOversizedLine {
+                let segment = data[segmentStart..<index]
+                if buffer.count + segment.count <= maximumLineBytes {
+                    buffer.append(contentsOf: segment)
+                    if !buffer.isEmpty {
+                        lines.append(buffer)
+                    }
+                }
+            }
+            clearCompletedLine()
+            discardingOversizedLine = false
+            index = data.index(after: index)
+            segmentStart = index
+        }
+
+        if segmentStart < data.endIndex, !discardingOversizedLine {
+            let segment = data[segmentStart..<data.endIndex]
+            if buffer.count + segment.count <= maximumLineBytes {
+                buffer.append(contentsOf: segment)
+            } else {
+                releaseBuffer()
+                discardingOversizedLine = true
             }
         }
         return lines
     }
 
     mutating func reset() {
-        buffer.removeAll(keepingCapacity: false)
+        releaseBuffer(countRelease: false)
+        discardingOversizedLine = false
+    }
+
+    private mutating func clearCompletedLine() {
+        if buffer.count > Self.retainedCapacityLimit {
+            releaseBuffer()
+        } else {
+            buffer.removeAll(keepingCapacity: true)
+        }
+    }
+
+    private mutating func releaseBuffer(countRelease: Bool = true) {
+        buffer = Data()
+        if countRelease { releasedLargeBufferCount += 1 }
+    }
+}
+
+struct CodexTaskEventBatchBuffer {
+    static let defaultMaximumEventCount = 256
+
+    private let maximumEventCount: Int
+    private var events: [CodexTaskEvent] = []
+
+    init(maximumEventCount: Int = Self.defaultMaximumEventCount) {
+        self.maximumEventCount = max(1, maximumEventCount)
+        events.reserveCapacity(self.maximumEventCount)
+    }
+
+    var bufferedEventCount: Int { events.count }
+
+    mutating func append(_ event: CodexTaskEvent) -> [CodexTaskEvent]? {
+        events.append(event)
+        guard events.count >= maximumEventCount else { return nil }
+        return drain()
+    }
+
+    mutating func finish() -> [CodexTaskEvent] {
+        drain()
+    }
+
+    private mutating func drain() -> [CodexTaskEvent] {
+        guard !events.isEmpty else { return [] }
+        let batch = events
+        events.removeAll(keepingCapacity: true)
+        return batch
     }
 }
 
@@ -43,8 +125,7 @@ enum CodexRolloutTaskEventParser {
               object["type"] as? String == "event_msg",
               let payload = object["payload"] as? [String: Any],
               let eventType = payload["type"] as? String,
-              let turnID = payload["turn_id"] as? String,
-              !turnID.isEmpty
+              let turnID = CodexTaskIdentifier.validated(payload["turn_id"] as? String)
         else { return nil }
 
         let outerDate = (object["timestamp"] as? String).flatMap(parseISO8601)
@@ -82,7 +163,7 @@ enum CodexRolloutTaskEventParser {
     }
 
     private static func epochDate(_ value: Any?) -> Date? {
-        number(value).map { Date(timeIntervalSince1970: $0) }
+        number(value).flatMap(CodexTaskTimestamp.date(unixTime:))
     }
 
     private static func number(_ value: Any?) -> Double? {
@@ -127,7 +208,7 @@ final class CodexTaskActivityPersistence {
 }
 
 final class CodexRemoteTaskCheckpointPersistence {
-    private static let storageKey = "CodexUsage.remoteTaskCheckpoints.v1"
+    private static let storageKey = "CodexUsage.remoteTaskCheckpoints.v2"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -190,7 +271,7 @@ final class CodexTaskActivityStore: ObservableObject {
             baselineEstablished: baselineEstablished,
             replayNotBefore: replayNotBefore
         ) { [weak self] update in
-            DispatchQueue.main.async {
+            DispatchQueue.main.sync {
                 self?.handleLocal(update)
             }
         }
@@ -246,7 +327,6 @@ final class CodexTaskActivityStore: ObservableObject {
             }
 
         case .ready:
-            _ = reducer.removeRunningTasks(startedBefore: Date().addingTimeInterval(-12 * 60 * 60))
             if !baselineEstablished {
                 baselineEstablished = true
             }
@@ -256,10 +336,6 @@ final class CodexTaskActivityStore: ObservableObject {
         case let .checkpoint(date):
             guard replayNotBefore == nil || date > replayNotBefore! else { return }
             replayNotBefore = date
-            publishAndPersist()
-
-        case let .reconcile(cutoff):
-            guard reducer.removeRunningTasks(startedBefore: cutoff) else { return }
             publishAndPersist()
 
         case let .unavailable(message):
@@ -289,7 +365,6 @@ final class CodexTaskActivityStore: ObservableObject {
             remoteCheckpoints[host.lowercased()] = checkpoint
             remoteCheckpointPersistence.save(remoteCheckpoints)
             sourceAvailability[sourceID] = .ready
-            _ = reducer.removeRunningTasks(startedBefore: Date().addingTimeInterval(-12 * 60 * 60))
             publishAndPersist()
 
         case let .unavailable(message):
@@ -314,7 +389,7 @@ final class CodexTaskActivityStore: ObservableObject {
                 host: host,
                 recoveryCheckpoint: remoteCheckpoints[key]
             ) { [weak self] update in
-                DispatchQueue.main.async {
+                DispatchQueue.main.sync {
                     self?.handleRemote(update, host: host)
                 }
             }
@@ -353,7 +428,6 @@ private enum CodexTaskMonitorUpdate {
     case events([CodexTaskEvent], CodexTaskEventOrigin)
     case ready
     case checkpoint(Date)
-    case reconcile(Date)
     case unavailable(String)
 }
 
@@ -367,11 +441,6 @@ private struct CodexTaskFileCursor {
     var offset: UInt64 = 0
     var fileNumber: UInt64?
     var lineBuffer = CodexJSONLineBuffer()
-}
-
-private struct CodexTaskReadBatch {
-    let events: [CodexTaskEvent]
-    let replayed: Bool
 }
 
 private enum CodexTaskReadError: Error {
@@ -442,33 +511,30 @@ private final class CodexTaskMonitor {
 
         tickCount += 1
         let shouldDiscover = tickCount % 10 == 0
-        let checkpointCandidate = shouldDiscover ? Date() : nil
+        let scanWatermark = Date()
+        let checkpointCandidate = shouldDiscover ? scanWatermark : nil
         let discoverySucceeded = shouldDiscover ? discoverNewSources() : false
 
-        var liveEvents: [CodexTaskEvent] = []
-        var replayedEvents: [CodexTaskEvent] = []
         var allReadsSucceeded = true
         for source in sourcesByPath.values {
-            switch readAppendedEvents(from: source) {
-            case let .success(batch):
-                if batch.replayed {
-                    replayedEvents.append(contentsOf: batch.events)
+            switch readAppendedEvents(from: source, onEvents: { [weak self] events, replayed in
+                guard let self else { return }
+                if replayed {
+                    self.emitReplay(events, scanWatermark: scanWatermark)
                 } else {
-                    liveEvents.append(contentsOf: batch.events)
+                    self.emitSorted(events, origin: .live)
                 }
+            }) {
+            case .success:
+                break
             case .failure:
                 allReadsSucceeded = false
             }
         }
-        emitSorted(liveEvents, origin: .live)
-        emitReplay(replayedEvents)
 
         if let checkpointCandidate, discoverySucceeded, allReadsSucceeded {
             replayNotBefore = checkpointCandidate
             onUpdate(.checkpoint(checkpointCandidate))
-        }
-        if tickCount % 60 == 0 {
-            onUpdate(.reconcile(Date().addingTimeInterval(-12 * 60 * 60)))
         }
     }
 
@@ -483,18 +549,18 @@ private final class CodexTaskMonitor {
         }
 
         sourcesByPath = Dictionary(uniqueKeysWithValues: discovered.map { ($0.path, $0) })
-        var events: [CodexTaskEvent] = []
+        let initialScanWatermark = startedAt
         for source in discovered {
-            switch readAppendedEvents(from: source) {
-            case let .success(batch):
-                events.append(contentsOf: batch.events)
+            switch readAppendedEvents(from: source, onEvents: { events, _ in
+                self.emitReplay(events, scanWatermark: initialScanWatermark)
+            }) {
+            case .success:
+                break
             case .failure:
-                cursorsByPath.removeAll()
                 onUpdate(.unavailable("暂时无法读取 Codex 本地任务记录"))
                 return
             }
         }
-        emitReplay(events)
         initialScanCompleted = true
         baselineEstablished = true
         replayNotBefore = startedAt
@@ -559,7 +625,6 @@ private final class CodexTaskMonitor {
         let query = """
         SELECT id, rollout_path AS rolloutPath,
                \(selection("title", alias: "title")),
-               \(selection("preview", alias: "preview")),
                \(selection("cwd", alias: "cwd")),
                \(createdAtExpression) AS createdAtMs
         FROM threads
@@ -576,14 +641,12 @@ private final class CodexTaskMonitor {
             return .failure(error)
         }
         let sources = rows.compactMap { row -> CodexTaskSource? in
-            guard let threadID = row["id"] as? String,
+            guard let threadID = CodexTaskIdentifier.validated(row["id"] as? String),
                   let path = row["rolloutPath"] as? String,
                   fileManager.fileExists(atPath: path)
             else { return nil }
 
-            let rawTitle = (row["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                ?? (row["preview"] as? String)
-                ?? ""
+            let rawTitle = row["title"] as? String ?? ""
             let cwd = row["cwd"] as? String ?? ""
             let createdAtMilliseconds = (row["createdAtMs"] as? NSNumber)?.doubleValue
                 ?? Double(row["createdAtMs"] as? String ?? "")
@@ -602,8 +665,9 @@ private final class CodexTaskMonitor {
     }
 
     private func readAppendedEvents(
-        from source: CodexTaskSource
-    ) -> Result<CodexTaskReadBatch, CodexTaskReadError> {
+        from source: CodexTaskSource,
+        onEvents: ([CodexTaskEvent], Bool) -> Void
+    ) -> Result<Void, CodexTaskReadError> {
         let attributes: [FileAttributeKey: Any]
         do {
             attributes = try fileManager.attributesOfItem(atPath: source.path)
@@ -628,7 +692,7 @@ private final class CodexTaskMonitor {
         guard fileSize > cursor.offset else {
             cursor.fileNumber = fileNumber
             cursorsByPath[source.path] = cursor
-            return .success(CodexTaskReadBatch(events: [], replayed: replayed))
+            return .success(())
         }
 
         let handle: FileHandle
@@ -641,22 +705,35 @@ private final class CodexTaskMonitor {
 
         do {
             try handle.seek(toOffset: cursor.offset)
-            let data = try handle.readToEnd() ?? Data()
-            cursor.offset += UInt64(data.count)
-            cursor.fileNumber = fileNumber
-            let lines = cursor.lineBuffer.append(data)
-            cursorsByPath[source.path] = cursor
             let earliestAllowed = source.createdAt.addingTimeInterval(-1)
-            let events = lines.compactMap { line in
-                CodexRolloutTaskEventParser.parse(line: line, metadata: source.metadata)
-            }.filter { $0.occurredAt >= earliestAllowed }
-            return .success(CodexTaskReadBatch(events: events, replayed: replayed))
+            var eventBuffer = CodexTaskEventBatchBuffer()
+            while let data = try handle.read(upToCount: 64 * 1024), !data.isEmpty {
+                cursor.offset += UInt64(data.count)
+                for line in cursor.lineBuffer.append(data) {
+                    guard let event = CodexRolloutTaskEventParser.parse(
+                        line: line,
+                        metadata: source.metadata
+                    ), event.occurredAt >= earliestAllowed else { continue }
+                    if let batch = eventBuffer.append(event) {
+                        onEvents(batch, replayed)
+                    }
+                }
+            }
+            let finalBatch = eventBuffer.finish()
+            if !finalBatch.isEmpty {
+                onEvents(finalBatch, replayed)
+            }
+            cursor.fileNumber = fileNumber
+            cursorsByPath[source.path] = cursor
+            return .success(())
         } catch {
+            cursor.fileNumber = fileNumber
+            cursorsByPath[source.path] = cursor
             return .failure(.unavailable)
         }
     }
 
-    private func emitReplay(_ events: [CodexTaskEvent]) {
+    private func emitReplay(_ events: [CodexTaskEvent], scanWatermark: Date) {
         let sorted = events.sorted { $0.occurredAt < $1.occurredAt }
         let grouped = Dictionary(grouping: sorted) { event in
             CodexTaskReplayPolicy.origin(
@@ -665,9 +742,16 @@ private final class CodexTaskMonitor {
                 baselineEstablished: baselineEstablished
             )
         }
-        emitSorted(grouped[.baseline] ?? [], origin: .baseline)
-        emitSorted(grouped[.live] ?? [], origin: .live)
-        emitSorted(grouped[.recovery] ?? [], origin: .recovery)
+        for origin in [CodexTaskEventOrigin.baseline, .live, .recovery] {
+            let retained = (grouped[origin] ?? []).filter {
+                CodexTaskReplayPolicy.shouldRetain(
+                    $0,
+                    origin: origin,
+                    scanWatermark: scanWatermark
+                )
+            }
+            emitSorted(retained, origin: origin)
+        }
     }
 
     private func emitSorted(_ events: [CodexTaskEvent], origin: CodexTaskEventOrigin) {

@@ -13,6 +13,11 @@ internal sealed record TaskResult(
 internal sealed record RunningTask(
     string Id, string SessionId, string Project, string? Source, DateTimeOffset StartedAt);
 
+internal sealed record DailyTaskRecord(
+    string Id, DateTimeOffset TerminalAt, bool Interrupted);
+
+internal readonly record struct TaskProgressCounts(int Completed, int Total);
+
 internal enum TaskEventKind { Started, Completed, Interrupted }
 internal enum TaskEventOrigin { Baseline, Live, Recovery }
 
@@ -32,6 +37,8 @@ internal sealed record UsageSnapshot(
     long LifetimeTokens,
     IReadOnlyList<RunningTask> Running,
     IReadOnlyList<TaskResult> Results,
+    int TodayCompletedCount,
+    int TodayTaskCount,
     bool TaskMonitorReady,
     string? TaskMonitorMessage,
     IReadOnlyList<string> RemoteHosts,
@@ -39,14 +46,10 @@ internal sealed record UsageSnapshot(
     string? StatusMessage)
 {
     internal static readonly UsageSnapshot Starting = new(
-        null, null, 0, 0, 0, [], [], false, "正在读取 Codex 本地数据", [], true, "正在读取 Codex 本地数据");
+        null, null, 0, 0, 0, [], [], 0, 0, false,
+        "正在读取 Codex 本地数据", [], true, "正在读取 Codex 本地数据");
 
     internal int UnreadCount => Results.Count(item => item.ReadAt is null);
-    internal int TodayCompletedCount => Results.Count(item =>
-        item.CompletedAt.LocalDateTime.Date == DateTime.Today && !item.Interrupted);
-    internal int TodayTaskCount => Results.Count(item =>
-        item.CompletedAt.LocalDateTime.Date == DateTime.Today) + Running.Count(item =>
-            item.StartedAt.LocalDateTime.Date == DateTime.Today);
 }
 
 internal sealed class PersistedState
@@ -56,4 +59,5 @@ internal sealed class PersistedState
     public DateTimeOffset? ReplayNotBefore { get; set; }
     public List<string> TerminalIds { get; set; } = [];
     public List<TaskResult> Results { get; set; } = [];
+    public List<DailyTaskRecord> DailyTasks { get; set; } = [];
 }

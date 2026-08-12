@@ -105,7 +105,7 @@ Do not import:
 ## Post-import hardening gates
 
 1. Re-run high-risk capability searches against the imported tree.
-2. Re-point the update checker to `Ustinian-J/CodexUsage` and make automatic checks opt-in.
+2. Re-point the update checker to the then-current `Ustinian-J/CodexUsage` repository and make automatic checks opt-in.
 3. Build from source with Apple system frameworks only.
 4. Run the app's JSON probe and inspect keys and values for secrets or conversation content.
 5. Verify the final app signature, Mach-O architecture, DMG contents, and checksum before installation.
@@ -115,6 +115,12 @@ Do not import:
 
 The independent repository adds its own `.github/workflows/ci.yml`; it is not copied from upstream. The workflow has `contents: read`, does not consume secrets, and uses only `actions/checkout` and `actions/upload-artifact` pinned to reviewed full commit SHAs. `scripts/test-ci-security.sh` enforces those properties.
 
-Automatic update checks now default to off, update metadata points to `Ustinian-J/CodexUsage`, and the Makefile no longer exposes the excluded upstream notarization or remote release-check targets. Current personal/test artifacts remain ad-hoc signed and explicitly not notarized.
+At the time of the initial import, automatic update checks defaulted to off and update metadata pointed to `Ustinian-J/CodexUsage`; the Makefile no longer exposed the excluded upstream notarization or remote release-check targets. Current personal/test artifacts remain ad-hoc signed and explicitly not notarized.
 
 The local extension also adds opt-in macOS quota notifications. They are disabled by default, request permission only after being enabled, and persist only a window kind, reset timestamp, and emitted threshold numbers. Notification content excludes account, conversation, prompt, path, and credential data.
+
+## 2026-08-12 repository rename and boundary-hardening addendum
+
+The existing repository was renamed from `Ustinian-J/CodexUsage` to `Ustinian-J/CodexS`; it was not replaced with a new repository. The fixed update endpoint now targets `https://api.github.com/repos/Ustinian-J/CodexS/releases`. Legacy bundle identifiers, local settings keys, cache paths, notification identifiers, and release-asset name matching remain unchanged for upgrade compatibility.
+
+Additional local hardening limits background reads to runtimes that remain visible, restricts Skill static-file inspection to approved roots and regular files no larger than 1 MiB, moves opt-in debug logging out of the shared `/tmp` namespace into a symlink-safe per-user temporary directory, removes unreachable interface and serialization code, and replaces wildcard resource packaging with an explicit image allowlist. These changes are covered by targeted self-tests plus the existing source, CI, product-identity, parser, and packaging gates.

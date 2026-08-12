@@ -2,7 +2,7 @@
 
 CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. It shows remaining Codex 5-hour and weekly quota as rings/two bars, tracks today/7-day/lifetime tokens, reports running and completed task activity, and builds a daily task board from local Codex conversations and automations.
 
-> The current version is `0.4.0`. Builds are verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
+> The current version is `0.4.0`. The [project repository](https://github.com/Ustinian-J/CodexS) is verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
 
 ## Features
 
@@ -23,7 +23,7 @@ CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. I
 - Menu bar percentages and progress fills represent remaining quota by default, like a battery indicator; a capsule background and outline separate CodexS from adjacent status items.
 - Subscription expiry is completely omitted until explicitly configured on the local Mac; the app neither queries the web nor infers a date.
 - Usage trends, project rankings, and tool/Skill statistics.
-- Optional local Claude Code statistics without affecting Codex-only use.
+- Optional local Claude Code statistics; hiding Claude Code in Settings stops background scans of `~/.claude`.
 - `Command + U` shows or hides the main window by default.
 - The Windows x64 build is a self-contained, dependency-free EXE with per-user installation; its tray icon uses the same two quota meters, task state badge, and unread marker as the Mac app.
 
@@ -35,6 +35,8 @@ This repository does not fork upstream history. Source was imported through an e
 - No access to `~/.codex/auth.json`, Keychain, browser cookies, or cloud credentials. When remote monitoring is enabled, system OpenSSH uses the existing configuration; CodexS never opens, copies, or stores SSH keys or passwords.
 - No upload of usage, conversations, tasks, paths, or account data.
 - Task monitoring extracts only the start, completion, and interruption fields it needs. If a log line contains `last_agent_message`, CodexS ignores it and never stores, displays, notifies, or uploads that text.
+- Static Skill statistics read only regular `SKILL.md` files up to 1 MiB under approved local Skill roots; symlinks, non-regular files, and paths outside those roots are rejected.
+- Debug logs are written only when `CODEXUSAGE_DEBUG=1` is explicitly set, under the system-provided per-user temporary directory, with symlink rejection and user-only file permissions.
 - The only runtime internet request is an optional GitHub Release metadata `GET`; automatic checks are off by default.
 - No silent update download, replacement, or execution.
 - CI uses only official GitHub Actions pinned to full commit SHAs, `contents: read`, and no repository secrets.
@@ -54,7 +56,7 @@ CodexS reads local metadata from:
 - `~/.codex/state_5.sqlite` thread and token metadata.
 - Token/tool metadata in local and archived Codex session JSONL files, plus task start, completion, and interruption events.
 - Enabled automation metadata under `~/.codex/automations/`.
-- Optional local usage/task metadata under `~/.claude/`.
+- Local usage/task metadata under `~/.claude/` only while the Claude Code runtime is visible.
 
 For compatibility with earlier builds, CodexS keeps the `com.ustinianj.codexusage` bundle ID, `CodexUsage.*` settings keys, and `~/Library/Caches/CodexUsage/` cache directory. The app does not need or read Codex login tokens.
 

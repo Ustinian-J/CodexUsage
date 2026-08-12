@@ -10,7 +10,7 @@ final class GitHubReleaseUpdateChecker {
 
     init(
         owner: String = "Ustinian-J",
-        repo: String = "CodexUsage",
+        repo: String = "CodexS",
         cacheDirectory: URL = RuntimeLoadContext.live().cacheDirectory,
         session: URLSession = .shared,
         minimumAutomaticCheckInterval: TimeInterval = 24 * 60 * 60,

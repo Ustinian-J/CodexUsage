@@ -1,5 +1,29 @@
 import Foundation
 
+enum CodexTaskTimestamp {
+    static let maximumUnixTime: Double = 253_402_300_799
+
+    static func date(unixTime: Double) -> Date? {
+        guard unixTime.isFinite,
+              unixTime >= 0,
+              unixTime <= maximumUnixTime
+        else { return nil }
+        return Date(timeIntervalSince1970: unixTime)
+    }
+}
+
+enum CodexTaskIdentifier {
+    static let maximumUTF8ByteCount = 512
+
+    static func validated(_ value: String?) -> String? {
+        guard let value,
+              !value.isEmpty,
+              value.utf8.count <= maximumUTF8ByteCount
+        else { return nil }
+        return value
+    }
+}
+
 enum CodexTaskMonitorAvailability: Equatable {
     case starting
     case ready
@@ -188,6 +212,8 @@ enum CodexTaskEventOrigin: Equatable, Hashable {
 }
 
 enum CodexTaskReplayPolicy {
+    private static let staleBaselineStartAge: TimeInterval = 12 * 60 * 60
+
     static func origin(
         for occurredAt: Date,
         replayNotBefore: Date,
@@ -195,6 +221,28 @@ enum CodexTaskReplayPolicy {
     ) -> CodexTaskEventOrigin {
         guard occurredAt >= replayNotBefore else { return .baseline }
         return baselineEstablished ? .recovery : .live
+    }
+
+    static func replayCutoff(previous: Date?, scanWatermark: Date) -> Date {
+        guard let previous else { return scanWatermark }
+        return min(previous, scanWatermark)
+    }
+
+    static func clockRolledBack(previous: Date?, scanWatermark: Date) -> Bool {
+        guard let previous else { return false }
+        return scanWatermark < previous
+    }
+
+    static func shouldRetain(
+        _ event: CodexTaskEvent,
+        origin: CodexTaskEventOrigin,
+        scanWatermark: Date,
+        clockRolledBack: Bool = false
+    ) -> Bool {
+        guard event.kind == .started,
+              origin == .baseline || clockRolledBack
+        else { return true }
+        return event.occurredAt >= scanWatermark.addingTimeInterval(-staleBaselineStartAge)
     }
 }
 
@@ -257,6 +305,12 @@ struct CodexTaskActivityReducer {
                   runningByIdentity[event.identity] == nil
             else { return .unchanged }
 
+            if runningByIdentity.values.contains(where: {
+                $0.threadID == event.metadata.threadID && $0.startedAt >= event.occurredAt
+            }) {
+                return .unchanged
+            }
+
             let superseded = runningByIdentity.values
                 .filter { $0.threadID == event.metadata.threadID && $0.id != event.identity }
                 .map(\.id)
@@ -300,17 +354,6 @@ struct CodexTaskActivityReducer {
         return changed
     }
 
-    mutating func removeRunningTasks(startedBefore cutoff: Date) -> Bool {
-        let stale = runningByIdentity.values
-            .filter { $0.startedAt < cutoff }
-            .map(\.id)
-        guard !stale.isEmpty else { return false }
-        for identity in stale {
-            runningByIdentity.removeValue(forKey: identity)
-        }
-        return true
-    }
-
     mutating func removeRunningTasks(sourceLabel: String) -> Bool {
         let identities = runningByIdentity.values
             .filter { $0.sourceLabel?.caseInsensitiveCompare(sourceLabel) == .orderedSame }
@@ -349,7 +392,11 @@ struct CodexTaskActivityReducer {
             readAt: nil
         )
         completions.removeAll { $0.id == completion.id }
-        completions.insert(completion, at: 0)
+        completions.append(completion)
+        completions.sort {
+            if $0.completedAt != $1.completedAt { return $0.completedAt > $1.completedAt }
+            return $0.id < $1.id
+        }
         if completions.count > Self.completionLimit {
             completions.removeLast(completions.count - Self.completionLimit)
         }
