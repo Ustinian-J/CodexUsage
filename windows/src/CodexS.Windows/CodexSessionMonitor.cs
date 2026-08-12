@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -9,7 +10,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     private sealed class Cursor
     {
         internal long Offset;
-        internal byte[] Partial = [];
+        internal BoundedLineBuffer Lines = new();
         internal long LastTokenTotal;
         internal string SessionId = string.Empty;
         internal string Project = "Codex";
@@ -25,6 +26,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     private readonly TaskActivityReducer reducer;
     private readonly Dictionary<string, RemoteCodexTaskMonitor> remoteMonitors = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (bool Ready, string? Message)> remoteStatus = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> remoteReplays = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cancellation = new();
     private readonly DateTimeOffset startedAt = DateTimeOffset.Now;
     private Task? worker;
@@ -32,6 +34,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     private bool taskMonitorReady;
     private string? taskMonitorMessage = "正在读取 Codex 本地数据";
     private bool stateDirty;
+    private bool stateFlushScheduled;
     private QuotaWindow? fiveHour;
     private QuotaWindow? sevenDay;
     private bool quotaStale = true;
@@ -102,7 +105,19 @@ internal sealed class CodexSessionMonitor : IDisposable
     {
         while (!cancellation.IsCancellationRequested)
         {
-            Scan();
+            try
+            {
+                Scan();
+            }
+            catch (Exception error) when (IsRecoverableScanException(error))
+            {
+                lock (gate)
+                {
+                    taskMonitorReady = false;
+                    taskMonitorMessage = "Codex 本地会话暂时不可读，正在重试";
+                    if (remoteReplays.Count == 0) PublishLocked();
+                }
+            }
             try { await Task.Delay(TimeSpan.FromSeconds(2), cancellation.Token); }
             catch (OperationCanceledException) { break; }
         }
@@ -111,25 +126,39 @@ internal sealed class CodexSessionMonitor : IDisposable
     private void Scan()
     {
         var scanStarted = DateTimeOffset.Now;
-        var roots = new[] {
+        var rootCandidates = new[] {
             Path.Combine(AppPaths.CodexHome, "sessions"),
             Path.Combine(AppPaths.CodexHome, "archived_sessions")
-        }.Where(Directory.Exists).ToArray();
+        };
 
-        if (roots.Length == 0)
+        var allSucceeded = true;
+        var foundRoot = false;
+        var files = new List<string>();
+        var enumerationOptions = SessionEnumerationOptions();
+        foreach (var root in rootCandidates)
+        {
+            try
+            {
+                if (!File.GetAttributes(root).HasFlag(FileAttributes.Directory)) continue;
+                foundRoot = true;
+                files.AddRange(Directory.EnumerateFiles(root, "*.jsonl", enumerationOptions));
+            }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+            catch (IOException) { allSucceeded = false; }
+            catch (UnauthorizedAccessException) { allSucceeded = false; }
+        }
+        if (!foundRoot && allSucceeded)
         {
             lock (gate)
             {
                 taskMonitorReady = false;
                 taskMonitorMessage = "未找到 Codex 本地会话目录";
-                PublishLocked();
+                if (remoteReplays.Count == 0) PublishLocked();
             }
             return;
         }
-
-        var allSucceeded = true;
-        var files = roots.SelectMany(root => Directory.EnumerateFiles(root, "*.jsonl", SearchOption.AllDirectories))
-            .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        files.Sort(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files)
         {
             try { ProcessFile(file); }
@@ -139,31 +168,41 @@ internal sealed class CodexSessionMonitor : IDisposable
 
         lock (gate)
         {
-            if (!initialScanFinished && allSucceeded)
+            if (!allSucceeded)
+            {
+                taskMonitorReady = false;
+                taskMonitorMessage = "部分 Codex 本地会话暂时不可读，正在重试";
+                if (stateDirty && remoteReplays.Count == 0)
+                {
+                    stateStore.Save(reducer.Persisted());
+                    stateDirty = false;
+                }
+            }
+            else if (!initialScanFinished)
             {
                 reducer.FinishInitialScan(startedAt);
                 initialScanFinished = true;
                 taskMonitorReady = true;
                 taskMonitorMessage = null;
-                stateStore.Save(reducer.Persisted());
-                stateDirty = false;
+                stateDirty = true;
+                if (remoteReplays.Count == 0) FlushStateLocked();
             }
             else if (initialScanFinished && allSucceeded)
             {
                 if (scanStarted - reducer.ReplayNotBefore >= TimeSpan.FromSeconds(30))
                 {
                     reducer.AdvanceCheckpoint(scanStarted);
-                    reducer.RemoveStaleRunning(scanStarted.AddHours(-12));
                     stateDirty = true;
                 }
                 taskMonitorReady = true;
-                if (stateDirty)
+                taskMonitorMessage = null;
+                if (stateDirty && remoteReplays.Count == 0)
                 {
                     stateStore.Save(reducer.Persisted());
                     stateDirty = false;
                 }
             }
-            PublishLocked();
+            if (remoteReplays.Count == 0) PublishLocked();
         }
     }
 
@@ -191,46 +230,42 @@ internal sealed class CodexSessionMonitor : IDisposable
         }
 
         stream.Seek(cursor.Offset, SeekOrigin.Begin);
-        using var memory = new MemoryStream();
-        stream.CopyTo(memory);
-        var appended = memory.ToArray();
-        cursor.Offset += appended.Length;
-        var combined = new byte[cursor.Partial.Length + appended.Length];
-        Buffer.BlockCopy(cursor.Partial, 0, combined, 0, cursor.Partial.Length);
-        Buffer.BlockCopy(appended, 0, combined, cursor.Partial.Length, appended.Length);
-
-        var lineStart = 0;
-        for (var index = 0; index < combined.Length; index++)
+        var buffer = new byte[BoundedLineBuffer.ChunkBytes];
+        int bytesRead;
+        while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
         {
-            if (combined[index] != (byte)'\n') continue;
-            var length = index - lineStart;
-            if (length > 0 && combined[index - 1] == (byte)'\r') length--;
-            if (length > 0) ParseLine(combined.AsSpan(lineStart, length), cursor, !replayed);
-            lineStart = index + 1;
+            cursor.Offset += bytesRead;
+            foreach (var line in cursor.Lines.Append(buffer.AsSpan(0, bytesRead)))
+                ParseLine(line, cursor, !replayed);
         }
-        cursor.Partial = combined[lineStart..];
         lock (gate) cursors[path] = cursor;
     }
 
-    private void ParseLine(ReadOnlySpan<byte> line, Cursor cursor, bool appendedLive)
+    private void ParseLine(byte[] line, Cursor cursor, bool appendedLive)
     {
-        if (line.IndexOf("session_meta"u8) < 0 && line.IndexOf("token_count"u8) < 0
-            && line.IndexOf("task_started"u8) < 0 && line.IndexOf("task_complete"u8) < 0
-            && line.IndexOf("turn_aborted"u8) < 0) return;
+        var span = line.AsSpan();
+        if (span.IndexOf("session_meta"u8) < 0 && span.IndexOf("token_count"u8) < 0
+            && span.IndexOf("task_started"u8) < 0 && span.IndexOf("task_complete"u8) < 0
+            && span.IndexOf("turn_aborted"u8) < 0) return;
 
-        using var document = JsonDocument.Parse(line.ToArray());
+        using var document = TryParseDocument(line);
+        if (document is null) return;
         var root = document.RootElement;
-        if (!root.TryGetProperty("type", out var typeElement)) return;
-        var type = typeElement.GetString();
-        if (!root.TryGetProperty("payload", out var payload)) return;
+        if (!TryGetSessionEnvelope(root, out var type, out var payload)) return;
 
         if (type == "session_meta")
         {
-            cursor.SessionId = ReadString(payload, "id") ?? ReadString(payload, "session_id") ?? cursor.SessionId;
+            var sessionId = ReadString(payload, "id") ?? ReadString(payload, "session_id");
+            if (!string.IsNullOrWhiteSpace(sessionId) && sessionId.Length <= 512)
+                cursor.SessionId = sessionId;
             var cwd = ReadString(payload, "cwd");
-            if (!string.IsNullOrWhiteSpace(cwd)) cursor.Project = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-            cursor.IsSubagent = string.Equals(ReadString(payload, "thread_source"), "subagent", StringComparison.Ordinal)
-                || payload.TryGetProperty("source", out var source) && source.TryGetProperty("subagent", out _);
+            if (!string.IsNullOrWhiteSpace(cwd))
+            {
+                var project = Path.GetFileName(cwd.TrimEnd('\\', '/'));
+                if (!string.IsNullOrWhiteSpace(project))
+                    cursor.Project = project[..Math.Min(255, project.Length)];
+            }
+            cursor.IsSubagent = IsSubagent(payload);
             return;
         }
         if (type != "event_msg" || cursor.IsSubagent) return;
@@ -238,12 +273,12 @@ internal sealed class CodexSessionMonitor : IDisposable
         var eventType = ReadString(payload, "type");
         if (eventType == "token_count")
         {
-            ParseToken(line, root, payload, cursor);
+            ParseToken(span, root, payload, cursor);
             return;
         }
         if (eventType is not ("task_started" or "task_complete" or "turn_aborted")) return;
         var turnId = ReadString(payload, "turn_id");
-        if (string.IsNullOrWhiteSpace(turnId)) return;
+        if (string.IsNullOrWhiteSpace(turnId) || turnId.Length > 512) return;
         var occurredAt = ReadEpoch(payload, eventType == "task_started" ? "started_at" : "completed_at")
             ?? ReadTimestamp(root) ?? DateTimeOffset.Now;
         var identity = Guid.TryParse(turnId, out var guid)
@@ -267,10 +302,7 @@ internal sealed class CodexSessionMonitor : IDisposable
 
     private void ParseToken(ReadOnlySpan<byte> line, JsonElement root, JsonElement payload, Cursor cursor)
     {
-        if (!payload.TryGetProperty("info", out var info)
-            || !info.TryGetProperty("total_token_usage", out var total)
-            || !total.TryGetProperty("total_tokens", out var totalElement)
-            || !totalElement.TryGetInt64(out var current)) return;
+        if (!TryReadTotalTokens(payload, out var current)) return;
         var delta = TokenDelta(cursor.LastTokenTotal, current);
         cursor.LastTokenTotal = current;
         if (delta <= 0) return;
@@ -286,6 +318,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     private UsageSnapshot MakeSnapshot()
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
+        var progress = reducer.Progress(today);
         var todayTokens = tokensByDay.GetValueOrDefault(today);
         long sevenTokens = 0;
         for (var offset = 0; offset < 7; offset++) sevenTokens += tokensByDay.GetValueOrDefault(today.AddDays(-offset));
@@ -294,7 +327,7 @@ internal sealed class CodexSessionMonitor : IDisposable
         var monitorMessage = taskMonitorReady ? remoteFailure.Message : taskMonitorMessage;
         return new UsageSnapshot(
             fiveHour, sevenDay, todayTokens, sevenTokens, tokensByDay.Values.Sum(),
-            reducer.Running, reducer.Results, allSourcesReady, monitorMessage,
+            reducer.Running, reducer.Results, progress.Completed, progress.Total, allSourcesReady, monitorMessage,
             remoteMonitors.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray(), quotaStale, statusMessage);
     }
 
@@ -304,12 +337,24 @@ internal sealed class CodexSessionMonitor : IDisposable
         objectElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() : null;
 
-    private static DateTimeOffset? ReadEpoch(JsonElement objectElement, string name)
+    internal static DateTimeOffset? ReadEpoch(JsonElement objectElement, string name)
     {
         if (!objectElement.TryGetProperty(name, out var value)) return null;
-        if (value.TryGetDouble(out var seconds)) return DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1000));
-        return value.ValueKind == JsonValueKind.String && double.TryParse(value.GetString(), out seconds)
-            ? DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1000)) : null;
+        double number;
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            if (!value.TryGetDouble(out number)) return null;
+        }
+        else if (value.ValueKind != JsonValueKind.String
+                 || !double.TryParse(value.GetString(), NumberStyles.Float,
+                     CultureInfo.InvariantCulture, out number))
+        {
+            return null;
+        }
+        if (!double.IsFinite(number)) return null;
+        var milliseconds = number > 100_000_000_000 ? number : number * 1000;
+        if (milliseconds is < 0 or > 253_402_300_799_999) return null;
+        return DateTimeOffset.FromUnixTimeMilliseconds((long)milliseconds);
     }
 
     private static DateTimeOffset? ReadTimestamp(JsonElement root) =>
@@ -318,6 +363,56 @@ internal sealed class CodexSessionMonitor : IDisposable
 
     internal static long TokenDelta(long previous, long current) =>
         current >= previous ? current - previous : current;
+
+    internal static JsonDocument? TryParseDocument(ReadOnlyMemory<byte> line)
+    {
+        try { return JsonDocument.Parse(line); }
+        catch (JsonException) { return null; }
+    }
+
+    internal static bool IsRecoverableScanException(Exception error) =>
+        error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException;
+
+    internal static EnumerationOptions SessionEnumerationOptions() => new() {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = false,
+        ReturnSpecialDirectories = false
+    };
+
+    internal static bool ShouldPublishRemoteEventImmediately(TaskEventOrigin origin) =>
+        origin == TaskEventOrigin.Live;
+
+    internal static bool IsSubagent(JsonElement payload) =>
+        string.Equals(ReadString(payload, "thread_source"), "subagent", StringComparison.Ordinal)
+        || payload.TryGetProperty("source", out var source) && source.ValueKind == JsonValueKind.Object
+        && source.TryGetProperty("subagent", out _);
+
+    internal static bool TryGetSessionEnvelope(
+        JsonElement root, out string? type, out JsonElement payload)
+    {
+        type = null;
+        payload = default;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("type", out var typeElement)
+            || typeElement.ValueKind != JsonValueKind.String
+            || !root.TryGetProperty("payload", out payload)
+            || payload.ValueKind != JsonValueKind.Object) return false;
+        type = typeElement.GetString();
+        return type is not null;
+    }
+
+    internal static bool TryReadTotalTokens(JsonElement payload, out long current)
+    {
+        current = 0;
+        return payload.ValueKind == JsonValueKind.Object
+            && payload.TryGetProperty("info", out var info)
+            && info.ValueKind == JsonValueKind.Object
+            && info.TryGetProperty("total_token_usage", out var total)
+            && total.ValueKind == JsonValueKind.Object
+            && total.TryGetProperty("total_tokens", out var totalElement)
+            && totalElement.ValueKind == JsonValueKind.Number
+            && totalElement.TryGetInt64(out current);
+    }
 
     private void SynchronizeRemoteHosts(IReadOnlyList<string> hosts, bool persist)
     {
@@ -331,6 +426,7 @@ internal sealed class CodexSessionMonitor : IDisposable
                 removed.Add(remoteMonitors[host]);
                 remoteMonitors.Remove(host);
                 remoteStatus.Remove(host);
+                remoteReplays.Remove(host);
                 reducer.RemoveSource(host);
             }
             foreach (var host in hosts)
@@ -338,6 +434,7 @@ internal sealed class CodexSessionMonitor : IDisposable
                 if (remoteMonitors.ContainsKey(host)) continue;
                 var monitor = new RemoteCodexTaskMonitor(host, remoteHostStore.Checkpoint(host));
                 monitor.EventArrived += (taskEvent, origin) => RemoteEventArrived(taskEvent, origin);
+                monitor.ReplayStarted += () => RemoteReplayStarted(host);
                 monitor.Ready += checkpoint => RemoteReady(host, checkpoint);
                 monitor.Unavailable += message => RemoteUnavailable(host, message);
                 remoteMonitors[host] = monitor;
@@ -346,6 +443,7 @@ internal sealed class CodexSessionMonitor : IDisposable
             }
             if (persist) remoteHostStore.SaveHosts(hosts);
             stateStore.Save(reducer.Persisted());
+            stateDirty = false;
             PublishLocked();
         }
         foreach (var monitor in removed) monitor.Dispose();
@@ -359,11 +457,24 @@ internal sealed class CodexSessionMonitor : IDisposable
         {
             if (taskEvent.Source is not null && !remoteMonitors.ContainsKey(taskEvent.Source)) return;
             completion = reducer.Apply(taskEvent, origin);
-            stateStore.Save(reducer.Persisted());
-            stateDirty = false;
-            PublishLocked();
+            stateDirty = true;
+            if (ShouldPublishRemoteEventImmediately(origin))
+            {
+                ScheduleStateFlushLocked();
+                PublishLocked();
+            }
         }
         if (completion is not null) CompletionArrived?.Invoke(completion);
+    }
+
+    private void RemoteReplayStarted(string host)
+    {
+        lock (gate)
+        {
+            if (!remoteMonitors.ContainsKey(host)) return;
+            remoteReplays.Add(host);
+            remoteStatus[host] = (false, $"正在同步远程任务主机 {host}");
+        }
     }
 
     private void RemoteReady(string host, DateTimeOffset checkpoint)
@@ -371,13 +482,42 @@ internal sealed class CodexSessionMonitor : IDisposable
         lock (gate)
         {
             if (!remoteMonitors.ContainsKey(host)) return;
+            remoteReplays.Remove(host);
             remoteStatus[host] = (true, null);
+            FlushStateLocked();
             remoteHostStore.SaveCheckpoint(host, checkpoint);
-            reducer.RemoveStaleRunning(DateTimeOffset.Now.AddHours(-12));
-            stateStore.Save(reducer.Persisted());
-            stateDirty = false;
             PublishLocked();
         }
+    }
+
+    private void ScheduleStateFlushLocked()
+    {
+        if (stateFlushScheduled || remoteReplays.Count > 0) return;
+        stateFlushScheduled = true;
+        _ = FlushStateAfterDelayAsync();
+    }
+
+    private async Task FlushStateAfterDelayAsync()
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(2), cancellation.Token); }
+        catch (OperationCanceledException)
+        {
+            lock (gate) stateFlushScheduled = false;
+            return;
+        }
+        lock (gate)
+        {
+            stateFlushScheduled = false;
+            if (remoteReplays.Count > 0) return;
+            FlushStateLocked();
+        }
+    }
+
+    private void FlushStateLocked()
+    {
+        if (!stateDirty) return;
+        stateStore.Save(reducer.Persisted());
+        stateDirty = false;
     }
 
     private void RemoteUnavailable(string host, string message)
@@ -385,7 +525,9 @@ internal sealed class CodexSessionMonitor : IDisposable
         lock (gate)
         {
             if (!remoteMonitors.ContainsKey(host)) return;
+            remoteReplays.Remove(host);
             remoteStatus[host] = (false, message);
+            FlushStateLocked();
             PublishLocked();
         }
     }
@@ -396,6 +538,7 @@ internal sealed class CodexSessionMonitor : IDisposable
         foreach (var monitor in remoteMonitors.Values) monitor.Dispose();
         remoteMonitors.Clear();
         try { worker?.Wait(TimeSpan.FromSeconds(2)); } catch { }
+        lock (gate) FlushStateLocked();
         cancellation.Dispose();
     }
 }

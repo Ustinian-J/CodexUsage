@@ -9,6 +9,7 @@ MACOS_DIR := $(APP_DIR)/Contents/MacOS
 RESOURCES_DIR := $(APP_DIR)/Contents/Resources
 SOURCES := $(shell find Sources/CodexUsageWidget -name '*.swift' | sort)
 APP_ICON := Resources/CodexS.icns
+RUNTIME_IMAGES := Resources/codex-color.png Resources/codex-template.png Resources/claudecode-color.png Resources/claudecode-template.png
 DEPLOYMENT_TARGET ?= 13.0
 HOST_ARCH := $(shell uname -m)
 APPLE_SILICON_TARGET_TRIPLE ?= arm64-apple-macos$(DEPLOYMENT_TARGET)
@@ -40,14 +41,14 @@ else
 CODESIGN_FLAGS := --force --deep --options runtime --timestamp --sign "$(SIGN_IDENTITY)" $(CODESIGN_EXTRA_FLAGS)
 endif
 
-.PHONY: build run probe test-rate-limits test-runtime-reset-times test-runtime-menu test-statistics-time-zone test-task-progress test-task-activity test-quota-pace test-quota-alerts test-reset-monitor test-particle-animation test-macos-compatibility test-ci-security test-source-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package verify clean clean-dist
+.PHONY: build run probe test-rate-limits test-runtime-reset-times test-runtime-provider-scopes test-runtime-menu test-statistics-time-zone test-task-progress test-task-activity test-local-security-boundaries test-quota-pace test-quota-alerts test-reset-monitor test-particle-animation test-macos-compatibility test-ci-security test-source-security install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all release-package verify clean clean-dist
 
 build:
 	rm -rf "$(APP_DIR)"
 	mkdir -p "$(MACOS_DIR)" "$(RESOURCES_DIR)" "$(MODULE_CACHE_DIR)"
 	cp Resources/Info.plist "$(APP_DIR)/Contents/Info.plist"
 	cp "$(APP_ICON)" "$(RESOURCES_DIR)/"
-	cp Resources/*.png "$(RESOURCES_DIR)/"
+	cp $(RUNTIME_IMAGES) "$(RESOURCES_DIR)/"
 	/usr/bin/xattr -dr com.apple.quarantine "$(APP_DIR)" 2>/dev/null || true
 	MACOSX_DEPLOYMENT_TARGET="$(DEPLOYMENT_TARGET)" swiftc $(SWIFT_OPTIMIZATION) -parse-as-library -sdk "$(SDKROOT)" -module-cache-path "$(MODULE_CACHE_DIR)" $(SWIFTC_TARGET_FLAGS) $(SWIFTC_FEATURE_FLAGS) $(SWIFT_MODULEMAP_WORKAROUND) $(SOURCES) \
 		-o "$(MACOS_DIR)/$(APP_NAME)" \
@@ -70,6 +71,9 @@ test-rate-limits:
 test-runtime-reset-times:
 	./scripts/test-runtime-reset-times.sh
 
+test-runtime-provider-scopes:
+	./scripts/test-runtime-provider-scopes.sh
+
 test-runtime-menu:
 	./scripts/test-runtime-menu.sh
 
@@ -81,6 +85,9 @@ test-task-progress:
 
 test-task-activity:
 	./scripts/test-task-activity.sh
+
+test-local-security-boundaries:
+	./scripts/test-local-security-boundaries.sh
 
 test-quota-pace:
 	./scripts/test-quota-pace.sh

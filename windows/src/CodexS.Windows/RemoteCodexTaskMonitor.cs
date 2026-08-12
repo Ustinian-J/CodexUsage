@@ -22,12 +22,38 @@ internal static class RemoteHostName
     }
 }
 
+internal static class RemoteReplayPolicy
+{
+    private static readonly TimeSpan RollbackRecoveryWindow = TimeSpan.FromDays(8);
+
+    internal static bool ClockRolledBack(
+        DateTimeOffset? previousCheckpoint, DateTimeOffset currentScanStart) =>
+        previousCheckpoint is { } previous && currentScanStart < previous;
+
+    internal static DateTimeOffset Cutoff(DateTimeOffset? previousCheckpoint, DateTimeOffset currentScanStart) =>
+        previousCheckpoint is null || ClockRolledBack(previousCheckpoint, currentScanStart)
+            ? currentScanStart : previousCheckpoint.Value;
+
+    internal static TaskEventOrigin Origin(
+        TaskEvent taskEvent, DateTimeOffset cutoff, bool clockRolledBack) =>
+        clockRolledBack && taskEvent.Kind != TaskEventKind.Started
+            ? taskEvent.OccurredAt >= cutoff - RollbackRecoveryWindow
+                ? TaskEventOrigin.Recovery : TaskEventOrigin.Baseline
+            : taskEvent.OccurredAt < cutoff ? TaskEventOrigin.Baseline : TaskEventOrigin.Recovery;
+
+    internal static bool ShouldSkipStaleStart(
+        TaskEvent taskEvent, TaskEventOrigin origin, DateTimeOffset scanStart, bool clockRolledBack) =>
+        (origin == TaskEventOrigin.Baseline || clockRolledBack)
+        && taskEvent.Kind == TaskEventKind.Started
+        && taskEvent.OccurredAt < scanStart.AddHours(-12);
+}
+
 internal sealed class RemoteHostStore
 {
     private sealed class Settings
     {
         public Settings() { }
-        public int SchemaVersion { get; set; } = 1;
+        public int SchemaVersion { get; set; } = 2;
         public List<string> Hosts { get; set; } = [];
         public Dictionary<string, DateTimeOffset> Checkpoints { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
@@ -55,10 +81,21 @@ internal sealed class RemoteHostStore
         {
             if (!File.Exists(AppPaths.RemoteHostsFile)) return new Settings();
             var value = JsonSerializer.Deserialize<Settings>(File.ReadAllText(AppPaths.RemoteHostsFile));
-            return value?.SchemaVersion == 1 ? value : new Settings();
+            if (value is null) return new Settings();
+            var hosts = RemoteHostName.Parse(string.Join(",", value.Hosts ?? new List<string>())).ToList();
+            var checkpoints = value.Checkpoints
+                ?? new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+            return new Settings {
+                Hosts = hosts,
+                Checkpoints = UsesRemoteClockCheckpoints(value.SchemaVersion)
+                    ? new Dictionary<string, DateTimeOffset>(checkpoints, StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase)
+            };
         }
         catch { return new Settings(); }
     }
+
+    internal static bool UsesRemoteClockCheckpoints(int schemaVersion) => schemaVersion == 2;
 
     private void Save()
     {
@@ -71,6 +108,9 @@ internal sealed class RemoteHostStore
 
 internal sealed class RemoteCodexTaskMonitor : IDisposable
 {
+    internal static readonly string OpenSshPath = Path.Combine(
+        Environment.SystemDirectory, "OpenSSH", "ssh.exe");
+
     private readonly string host;
     private readonly CancellationTokenSource cancellation = new();
     private DateTimeOffset? recoveryCheckpoint;
@@ -78,6 +118,7 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
     private Process? process;
 
     internal event Action<TaskEvent, TaskEventOrigin>? EventArrived;
+    internal event Action? ReplayStarted;
     internal event Action<DateTimeOffset>? Ready;
     internal event Action<string>? Unavailable;
 
@@ -105,9 +146,11 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
     {
         if (RemoteHostName.Validate(host) != host)
             throw new InvalidOperationException("Invalid SSH host alias");
+        if (!File.Exists(OpenSshPath))
+            throw new FileNotFoundException("System OpenSSH client is unavailable", OpenSshPath);
 
         var startInfo = new ProcessStartInfo {
-            FileName = "ssh.exe",
+            FileName = OpenSshPath,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -120,56 +163,103 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
         }) startInfo.ArgumentList.Add(argument);
 
         using var connection = new Process { StartInfo = startInfo };
-        process = connection;
         if (!connection.Start()) throw new InvalidOperationException("Could not start OpenSSH");
-        var stderrDrain = connection.StandardError.ReadToEndAsync(token);
-        var replay = new List<TaskEvent>();
+        process = connection;
+        var stderrDrain = DrainAsync(connection.StandardError.BaseStream, token);
+        var lineBuffer = new BoundedLineBuffer();
+        var outputBuffer = new byte[BoundedLineBuffer.ChunkBytes];
         var streamReady = false;
+        DateTimeOffset? activeScanStart = null;
+        DateTimeOffset? replayCutoff = null;
+        var clockRolledBack = false;
 
-        while (!token.IsCancellationRequested)
+        try
         {
-            var line = await connection.StandardOutput.ReadLineAsync(token);
-            if (line is null) break;
-            RemoteEnvelope? envelope;
-            try { envelope = JsonSerializer.Deserialize<RemoteEnvelope>(line); }
-            catch (JsonException) { continue; }
-            if (envelope?.Kind == "error")
+            while (!token.IsCancellationRequested)
             {
-                Unavailable?.Invoke($"远程任务主机 {host} 未找到可读的 Codex 会话");
-                continue;
-            }
-            if (envelope?.Kind == "ready")
-            {
-                foreach (var taskEvent in replay.OrderBy(item => item.OccurredAt))
+                var bytesRead = await connection.StandardOutput.BaseStream.ReadAsync(outputBuffer, token);
+                if (bytesRead == 0) break;
+                foreach (var line in lineBuffer.Append(outputBuffer.AsSpan(0, bytesRead)))
                 {
-                    var origin = recoveryCheckpoint is null || taskEvent.OccurredAt < recoveryCheckpoint
-                        ? TaskEventOrigin.Baseline : TaskEventOrigin.Recovery;
-                    EventArrived?.Invoke(taskEvent, origin);
+                    RemoteEnvelope? envelope;
+                    try { envelope = JsonSerializer.Deserialize<RemoteEnvelope>(line); }
+                    catch (JsonException) { continue; }
+                    if (envelope?.Kind == "error")
+                    {
+                        Unavailable?.Invoke($"远程任务主机 {host} 未找到可读的 Codex 会话");
+                        continue;
+                    }
+                    if (envelope?.Kind == "scan_started")
+                    {
+                        if (!TryUnixTime(envelope.ScanStartedAt, out var scanStart))
+                            throw new InvalidDataException("Remote scan watermark is invalid");
+                        activeScanStart = scanStart;
+                        clockRolledBack = RemoteReplayPolicy.ClockRolledBack(
+                            recoveryCheckpoint, scanStart);
+                        replayCutoff = RemoteReplayPolicy.Cutoff(recoveryCheckpoint, scanStart);
+                        ReplayStarted?.Invoke();
+                        continue;
+                    }
+                    if (envelope?.Kind == "ready")
+                    {
+                        if (!TryUnixTime(envelope.ScanStartedAt, out var scanStart)
+                            || !TryUnixTime(envelope.ScanFinishedAt, out var scanFinish)
+                            || activeScanStart != scanStart || scanFinish < scanStart)
+                            throw new InvalidDataException("Remote ready watermark is invalid");
+                        streamReady = true;
+                        recoveryCheckpoint = scanStart;
+                        Ready?.Invoke(scanStart);
+                        continue;
+                    }
+                    var parsed = ParseEvent(envelope);
+                    if (parsed is null) continue;
+                    if (streamReady)
+                        EventArrived?.Invoke(parsed, TaskEventOrigin.Live);
+                    else if (replayCutoff is { } cutoff && activeScanStart is { } scanStart)
+                    {
+                        var origin = RemoteReplayPolicy.Origin(parsed, cutoff, clockRolledBack);
+                        if (!RemoteReplayPolicy.ShouldSkipStaleStart(
+                                parsed, origin, scanStart, clockRolledBack))
+                            EventArrived?.Invoke(parsed, origin);
+                    }
                 }
-                replay.Clear();
-                streamReady = true;
-                recoveryCheckpoint = DateTimeOffset.Now;
-                Ready?.Invoke(recoveryCheckpoint.Value);
-                continue;
             }
-            var parsed = ParseEvent(envelope);
-            if (parsed is null) continue;
-            if (streamReady) EventArrived?.Invoke(parsed, TaskEventOrigin.Live);
-            else replay.Add(parsed);
-        }
 
-        await connection.WaitForExitAsync(token);
-        await stderrDrain;
+            await connection.WaitForExitAsync(token);
+        }
+        finally
+        {
+            try { if (!connection.HasExited) connection.Kill(true); } catch { }
+            try { await stderrDrain; } catch (OperationCanceledException) { }
+            if (ReferenceEquals(process, connection)) process = null;
+        }
         if (!token.IsCancellationRequested)
             Unavailable?.Invoke($"远程任务主机 {host} 暂时不可用");
+    }
+
+    private static async Task DrainAsync(Stream stream, CancellationToken token)
+    {
+        var buffer = new byte[BoundedLineBuffer.ChunkBytes];
+        while (await stream.ReadAsync(buffer, token) > 0) { }
+    }
+
+    internal static bool TryUnixTime(double? seconds, out DateTimeOffset value)
+    {
+        value = default;
+        if (seconds is null || !double.IsFinite(seconds.Value)) return false;
+        var milliseconds = seconds.Value * 1000;
+        if (!double.IsFinite(milliseconds)
+            || milliseconds is < 0 or > 253_402_300_799_999) return false;
+        value = DateTimeOffset.FromUnixTimeMilliseconds((long)milliseconds);
+        return true;
     }
 
     private TaskEvent? ParseEvent(RemoteEnvelope? value)
     {
         if (value?.Kind != "event" || string.IsNullOrWhiteSpace(value.Event)
             || string.IsNullOrWhiteSpace(value.TurnId) || string.IsNullOrWhiteSpace(value.ThreadId)
-            || value.OccurredAt is null || !double.IsFinite(value.OccurredAt.Value)
-            || value.OccurredAt.Value is < 0 or > 253402300799) return null;
+            || value.TurnId.Length > 512 || value.ThreadId.Length > 512
+            || !TryUnixTime(value.OccurredAt, out var occurredAt)) return null;
         var kind = value.Event switch {
             "started" => TaskEventKind.Started,
             "completed" => TaskEventKind.Completed,
@@ -181,8 +271,10 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
             ? guid.ToString("D").ToLowerInvariant()
             : $"{value.ThreadId}:{value.TurnId}";
         return new TaskEvent(
-            identity, value.ThreadId, value.ProjectName ?? "Codex", host,
-            DateTimeOffset.FromUnixTimeMilliseconds((long)(value.OccurredAt.Value * 1000)), kind.Value);
+            identity, value.ThreadId,
+            string.IsNullOrWhiteSpace(value.ProjectName) ? "Codex" : value.ProjectName[..Math.Min(255, value.ProjectName.Length)],
+            host,
+            occurredAt, kind.Value);
     }
 
     private static string ShellQuote(string value) => "'" + value.Replace("'", "'\\''") + "'";
@@ -190,11 +282,14 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
 
     private const string RemoteScript = """
 import datetime
-import glob
 import json
 import os
+import stat as stat_module
 import sys
 import time
+
+CHUNK_BYTES = 65536
+MAX_LINE_BYTES = 1048576
 
 def emit(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
@@ -215,8 +310,13 @@ def event_time(payload, root, key):
         return timestamp(root.get("timestamp"))
 
 def project_name(path):
+    if not isinstance(path, str):
+        return None
     value = (path or "").replace("\\", "/").rstrip("/")
     return value.rsplit("/", 1)[-1] if value else None
+
+def valid_id(value):
+    return isinstance(value, str) and 0 < len(value.encode("utf-8")) <= 512
 
 def source(path):
     session_id = os.path.splitext(os.path.basename(path))[0]
@@ -225,26 +325,36 @@ def source(path):
     try:
         with open(path, "rb") as handle:
             for _ in range(100):
-                line = handle.readline()
+                line = handle.readline(MAX_LINE_BYTES + 1)
                 if not line:
                     break
+                if len(line) > MAX_LINE_BYTES:
+                    while line and not line.endswith(b"\n"):
+                        line = handle.readline(MAX_LINE_BYTES + 1)
+                    continue
                 try:
                     root = json.loads(line)
                 except Exception:
                     continue
+                if not isinstance(root, dict):
+                    continue
                 if root.get("type") != "session_meta":
                     continue
                 payload = root.get("payload") or {}
+                if not isinstance(payload, dict):
+                    continue
                 source_value = payload.get("source")
                 if payload.get("thread_source") == "subagent" or isinstance(source_value, dict) and "subagent" in source_value:
-                    return None
-                session_id = payload.get("id") or payload.get("session_id") or session_id
+                    return None, True
+                candidate_id = payload.get("id") or payload.get("session_id")
+                if valid_id(candidate_id):
+                    session_id = candidate_id
                 project = project_name(payload.get("cwd"))
                 created = timestamp(root.get("timestamp")) or 0.0
                 break
     except OSError:
-        return None
-    return session_id, project, created
+        return None, False
+    return (session_id, project, created), True
 
 def discover_home():
     for value in (os.environ.get("CODEX_HOME"), os.path.expanduser("~/.codex")):
@@ -254,47 +364,106 @@ def discover_home():
 
 def discover(home):
     paths = []
+    complete = True
     for directory in (os.path.join(home, "sessions"), os.path.join(home, "archived_sessions")):
-        paths.extend(glob.glob(os.path.join(directory, "**", "*.jsonl"), recursive=True))
-    return {path: metadata for path in paths if (metadata := source(path)) is not None}
+        try:
+            directory_stat = os.stat(directory)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            complete = False
+            continue
+        if not stat_module.S_ISDIR(directory_stat.st_mode):
+            complete = False
+            continue
+        walk_errors = []
+        for root, _, files in os.walk(directory, onerror=walk_errors.append):
+            paths.extend(os.path.join(root, name) for name in files if name.endswith(".jsonl"))
+        if walk_errors:
+            complete = False
+    sources = {}
+    for path in paths:
+        metadata, readable = source(path)
+        if not readable:
+            complete = False
+        elif metadata is not None:
+            sources[path] = metadata
+    return sources, complete
+
+def consume_chunk(cursor, chunk):
+    lines = []
+    offset = 0
+    while offset < len(chunk):
+        newline = chunk.find(b"\n", offset)
+        if newline < 0:
+            segment = chunk[offset:]
+            if not cursor["dropping"]:
+                if len(cursor["partial"]) + len(segment) > MAX_LINE_BYTES:
+                    cursor["partial"].clear()
+                    cursor["dropping"] = True
+                else:
+                    cursor["partial"].extend(segment)
+            break
+        segment = chunk[offset:newline]
+        if not cursor["dropping"]:
+            if len(cursor["partial"]) + len(segment) > MAX_LINE_BYTES:
+                cursor["partial"].clear()
+                cursor["dropping"] = True
+            else:
+                cursor["partial"].extend(segment)
+        if not cursor["dropping"] and cursor["partial"]:
+            line = bytes(cursor["partial"])
+            lines.append(line[:-1] if line.endswith(b"\r") else line)
+        cursor["partial"].clear()
+        cursor["dropping"] = False
+        offset = newline + 1
+    return lines
+
+def parse_event_line(line, metadata):
+    if b"task_started" not in line and b"task_complete" not in line and b"turn_aborted" not in line:
+        return
+    try:
+        root = json.loads(line)
+    except Exception:
+        return
+    if not isinstance(root, dict):
+        return
+    if root.get("type") != "event_msg":
+        return
+    payload = root.get("payload") or {}
+    if not isinstance(payload, dict):
+        return
+    event_type = payload.get("type")
+    if event_type not in ("task_started", "task_complete", "turn_aborted"):
+        return
+    turn_id = payload.get("turn_id")
+    occurred = event_time(payload, root, "started_at" if event_type == "task_started" else "completed_at")
+    session_id, project, created = metadata
+    if not isinstance(turn_id, str) or not turn_id or occurred is None or occurred + 1 < created:
+        return
+    emit({"kind":"event","event":{"task_started":"started","task_complete":"completed","turn_aborted":"aborted"}[event_type],"turn_id":turn_id,"occurred_at":occurred,"thread_id":session_id,"project_name":project})
 
 def read_file(path, metadata, cursors):
     try:
         stat = os.stat(path)
-        cursor = cursors.get(path, {"offset": 0, "inode": stat.st_ino, "partial": b""})
+        cursor = cursors.get(path, {"offset": 0, "inode": stat.st_ino, "partial": bytearray(), "dropping": False})
         if stat.st_size < cursor["offset"] or stat.st_ino != cursor["inode"]:
-            cursor = {"offset": 0, "inode": stat.st_ino, "partial": b""}
+            cursor = {"offset": 0, "inode": stat.st_ino, "partial": bytearray(), "dropping": False}
+        cursors[path] = cursor
         if stat.st_size == cursor["offset"]:
-            cursors[path] = cursor
-            return
+            return True
         with open(path, "rb") as handle:
             handle.seek(cursor["offset"])
-            appended = handle.read()
-        cursor["offset"] += len(appended)
-        lines = (cursor["partial"] + appended).split(b"\n")
-        cursor["partial"] = lines.pop()
-        cursors[path] = cursor
+            while True:
+                chunk = handle.read(CHUNK_BYTES)
+                if not chunk:
+                    break
+                cursor["offset"] += len(chunk)
+                for line in consume_chunk(cursor, chunk):
+                    parse_event_line(line, metadata)
     except OSError:
-        return
-    session_id, project, created = metadata
-    for line in lines:
-        if b"task_started" not in line and b"task_complete" not in line and b"turn_aborted" not in line:
-            continue
-        try:
-            root = json.loads(line)
-        except Exception:
-            continue
-        if root.get("type") != "event_msg":
-            continue
-        payload = root.get("payload") or {}
-        event_type = payload.get("type")
-        if event_type not in ("task_started", "task_complete", "turn_aborted"):
-            continue
-        turn_id = payload.get("turn_id")
-        occurred = event_time(payload, root, "started_at" if event_type == "task_started" else "completed_at")
-        if not isinstance(turn_id, str) or not turn_id or occurred is None or occurred + 1 < created:
-            continue
-        emit({"kind":"event","event":{"task_started":"started","task_complete":"completed","turn_aborted":"aborted"}[event_type],"turn_id":turn_id,"occurred_at":occurred,"thread_id":session_id,"project_name":project})
+        return False
+    return True
 
 def main():
     home = discover_home()
@@ -302,19 +471,26 @@ def main():
         emit({"kind":"error"})
         return 2
     cursors = {}
-    sources = discover(home)
+    scan_started = time.time()
+    emit({"kind":"scan_started","scan_started_at":scan_started})
+    sources, initial_complete = discover(home)
     if not sources:
         emit({"kind":"error"})
         return 2
     for path in sorted(sources):
-        read_file(path, sources[path], cursors)
-    emit({"kind":"ready"})
+        if not read_file(path, sources[path], cursors):
+            initial_complete = False
+    if not initial_complete:
+        emit({"kind":"error"})
+        return 3
+    emit({"kind":"ready","scan_started_at":scan_started,"scan_finished_at":time.time()})
     tick = 0
     while True:
         time.sleep(1)
         tick += 1
         if tick % 10 == 0:
-            sources.update(discover(home))
+            discovered, _ = discover(home)
+            sources.update(discovered)
         for path in sorted(sources):
             read_file(path, sources[path], cursors)
 
@@ -342,6 +518,10 @@ except Exception:
         public string? ThreadId { get; set; }
         [JsonPropertyName("project_name")]
         public string? ProjectName { get; set; }
+        [JsonPropertyName("scan_started_at")]
+        public double? ScanStartedAt { get; set; }
+        [JsonPropertyName("scan_finished_at")]
+        public double? ScanFinishedAt { get; set; }
     }
 
     public void Dispose()

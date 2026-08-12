@@ -24,9 +24,9 @@ CodexS reads:
 - local responses from `codex app-server`
 - `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/archived_sessions/*.jsonl` token/tool metadata
 - `task_started`, `task_complete`, and `turn_aborted` event fields from current Codex rollout files
-- `~/.claude/projects/**/*.jsonl` assistant `message.usage` and `tool_use.name` metadata
-- `~/.claude/tasks/**/*.json` task status/title metadata
-- optional `~/Library/Caches/CodexUsage/claude-code/statusline-snapshot.json`
+- when the Claude Code runtime is visible, `~/.claude/projects/**/*.jsonl` assistant `message.usage` and `tool_use.name` metadata
+- when the Claude Code runtime is visible, `~/.claude/tasks/**/*.json` task status/title metadata
+- when the Claude Code runtime is visible, optional `~/Library/Caches/CodexUsage/claude-code/statusline-snapshot.json`
 - optional `~/Library/Caches/CodexUsage/update-check.json` for cached GitHub Release update metadata
 - optional SSH remote Codex task metadata: host alias, task/thread IDs, thread title, project basename, event type, timestamp, outcome, and read state
 
@@ -36,9 +36,11 @@ Remote monitoring is opt-in and stores only validated SSH config aliases plus pe
 
 It should not upload local usage, transcript, task, thread, account, or path data to a third-party service. Claude Code transcript parsing must not store prompt text, assistant response text, tool arguments, or tool output.
 
+Static Skill inspection is limited to regular `SKILL.md` files under `~/.codex/skills/`, `~/.codex/plugins/cache/`, or `~/.agents/skills/`. Paths outside those roots, symbolic links, non-regular files, and files larger than 1 MiB are rejected. Debug logging is disabled unless `CODEXUSAGE_DEBUG=1` is set; enabled logs use a `CodexS/debug.log` file under the system-provided per-user temporary directory, reject symbolic links, and are restricted to the current user.
+
 ## Network Scope
 
-CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexUsage/releases` during automatic checks when enabled or when the user manually checks for updates. When the user explicitly configures SSH hosts, CodexS also opens long-lived encrypted SSH connections to those aliases solely for remote task events.
+CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexS/releases` during automatic checks when enabled or when the user manually checks for updates. When the user explicitly configures SSH hosts, CodexS also opens long-lived encrypted SSH connections to those aliases solely for remote task events.
 
 Update requests must not include local usage, transcript, task, thread, account, path, prompt, response, tool argument, or tool output data. The update checker may send standard HTTPS headers such as `User-Agent` and `If-None-Match` for ETag caching.
 

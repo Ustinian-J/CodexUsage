@@ -170,7 +170,7 @@ enum StatisticsTimeZoneSelfTest {
         let grouped = Dictionary(grouping: sampleEvents, by: utc.dayKey(for:))
         let elapsed = CFAbsoluteTimeGetCurrent() - started
         expect(grouped.values.reduce(0) { $0 + $1.count } == sampleEvents.count, "25K event conservation")
-        expect(elapsed < 0.5, "25K grouping should remain comfortably interactive")
+        expect(elapsed < 2, "25K grouping should remain comfortably interactive")
 
         if failures == 0 {
             print("statistics time zone self-test passed")

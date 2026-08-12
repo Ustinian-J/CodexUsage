@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Stopped hidden runtimes from scanning their local data sources during background refreshes.
+- Restricted Skill static-file inspection to approved roots, regular files, and a 1 MiB size limit, and moved opt-in debug logging to a symlink-safe per-user temporary file.
+- Hardened local and SSH task monitoring with remote-clock replay watermarks, bounded streaming parsers, baseline-only stale-start filtering, fixed Windows OpenSSH resolution, and recoverable malformed-record handling.
+- Decoupled Windows daily task progress from the 50-item notification list so full same-day baseline history is counted without generating old alerts.
+- Removed unreachable update/menu components, obsolete JSON serialization helpers, and the legacy CodexUsage icon; macOS resources now use an explicit packaging allowlist.
+- Renamed the GitHub repository identity and update endpoint from `Ustinian-J/CodexUsage` to `Ustinian-J/CodexS` while preserving bundle IDs, settings keys, cache paths, and legacy asset matching for upgrades.
+
 ## 0.4.0 - 2026-08-10
 
 - Added opt-in SSH task monitoring on macOS and Windows using aliases from the user's existing OpenSSH config.

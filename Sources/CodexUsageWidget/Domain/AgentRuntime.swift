@@ -53,6 +53,13 @@ enum RuntimeStatusMenuPolicy {
     }
 }
 
+func runtimeScopedStatisticsCacheKey(
+    resolvedIdentifier: String,
+    scopes: [RuntimeScope]
+) -> String {
+    resolvedIdentifier + "|" + scopes.map(\.runtimeId).sorted().joined(separator: ",")
+}
+
 enum RuntimeMenuStatus: String, Codable, Equatable {
     case available
     case localOnly

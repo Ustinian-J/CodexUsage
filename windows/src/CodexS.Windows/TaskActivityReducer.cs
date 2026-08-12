@@ -4,10 +4,16 @@ internal sealed class TaskActivityReducer
 {
     private const int TerminalLimit = 8192;
     private const int ResultLimit = 50;
+    private const int DailyHistoryDays = 9;
+    internal const int DailyTaskLimit = 20_000;
     private readonly Dictionary<string, RunningTask> running = new(StringComparer.Ordinal);
     private readonly HashSet<string> terminalSet;
     private readonly List<string> terminalOrder;
     private readonly List<TaskResult> results;
+    private readonly Dictionary<string, DailyTaskRecord> dailyTasks = new(StringComparer.Ordinal);
+    private readonly Queue<string> dailyTaskOrder = new();
+    private readonly DateTimeOffset localBaselineStartCutoff;
+    private DateOnly lastDailyPruneDay;
 
     internal bool BaselineEstablished { get; private set; }
     internal DateTimeOffset ReplayNotBefore { get; private set; }
@@ -16,9 +22,24 @@ internal sealed class TaskActivityReducer
     {
         BaselineEstablished = state.BaselineEstablished;
         ReplayNotBefore = state.ReplayNotBefore ?? startedAt;
-        terminalOrder = state.TerminalIds.TakeLast(TerminalLimit).ToList();
+        localBaselineStartCutoff = startedAt.AddHours(-12);
+        terminalOrder = (state.TerminalIds ?? new List<string>()).TakeLast(TerminalLimit).ToList();
         terminalSet = new HashSet<string>(terminalOrder, StringComparer.Ordinal);
-        results = state.Results.OrderByDescending(item => item.CompletedAt).Take(ResultLimit).ToList();
+        results = (state.Results ?? new List<TaskResult>())
+            .OrderByDescending(item => item.CompletedAt).Take(ResultLimit).ToList();
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var oldest = today.AddDays(-(DailyHistoryDays - 1));
+        foreach (var item in (state.DailyTasks ?? new List<DailyTaskRecord>())
+                     .OfType<DailyTaskRecord>()
+                     .Where(item => !string.IsNullOrWhiteSpace(item.Id) && item.Id.Length <= 1025
+                                    && DailyDate(item) >= oldest && DailyDate(item) <= today)
+                     .OrderBy(item => item.TerminalAt)
+                     .TakeLast(DailyTaskLimit))
+        {
+            if (!dailyTasks.TryAdd(item.Id, item)) continue;
+            dailyTaskOrder.Enqueue(item.Id);
+        }
+        lastDailyPruneDay = today;
     }
 
     internal TaskResult? Apply(TaskEvent taskEvent, bool appendedLive)
@@ -33,7 +54,9 @@ internal sealed class TaskActivityReducer
     {
         if (taskEvent.Kind == TaskEventKind.Started)
         {
-            if (terminalSet.Contains(taskEvent.Id)) return null;
+            if (origin == TaskEventOrigin.Baseline && taskEvent.Source is null
+                && taskEvent.OccurredAt < localBaselineStartCutoff) return null;
+            if (IsKnownTerminal(taskEvent.Id)) return null;
             var newerInSession = running.Values.FirstOrDefault(item =>
                 item.SessionId == taskEvent.SessionId && item.StartedAt >= taskEvent.OccurredAt);
             if (newerInSession is not null) return null;
@@ -47,13 +70,14 @@ internal sealed class TaskActivityReducer
         }
 
         running.Remove(taskEvent.Id);
-        if (!terminalSet.Add(taskEvent.Id)) return null;
-        terminalOrder.Add(taskEvent.Id);
-        while (terminalOrder.Count > TerminalLimit)
+        var knownTerminal = IsKnownTerminal(taskEvent.Id);
+        RecordDailyTerminal(taskEvent);
+        if (knownTerminal)
         {
-            terminalSet.Remove(terminalOrder[0]);
-            terminalOrder.RemoveAt(0);
+            RememberTerminalIdentity(taskEvent.Id);
+            return null;
         }
+        RememberTerminalIdentity(taskEvent.Id);
         if (origin == TaskEventOrigin.Baseline) return null;
 
         var result = new TaskResult(
@@ -69,22 +93,28 @@ internal sealed class TaskActivityReducer
         return result;
     }
 
+    private bool IsKnownTerminal(string id) => terminalSet.Contains(id) || dailyTasks.ContainsKey(id);
+
+    private void RememberTerminalIdentity(string id)
+    {
+        if (!terminalSet.Add(id)) return;
+        terminalOrder.Add(id);
+        while (terminalOrder.Count > TerminalLimit)
+        {
+            terminalSet.Remove(terminalOrder[0]);
+            terminalOrder.RemoveAt(0);
+        }
+    }
+
     internal void FinishInitialScan(DateTimeOffset checkpoint)
     {
         BaselineEstablished = true;
         ReplayNotBefore = checkpoint;
-        RemoveStaleRunning(checkpoint.AddHours(-12));
     }
 
     internal void AdvanceCheckpoint(DateTimeOffset checkpoint)
     {
         if (checkpoint > ReplayNotBefore) ReplayNotBefore = checkpoint;
-    }
-
-    internal void RemoveStaleRunning(DateTimeOffset cutoff)
-    {
-        foreach (var id in running.Values.Where(item => item.StartedAt < cutoff).Select(item => item.Id).ToArray())
-            running.Remove(id);
     }
 
     internal void RemoveSource(string source)
@@ -119,11 +149,58 @@ internal sealed class TaskActivityReducer
         .OrderByDescending(item => item.StartedAt).ToArray();
     internal IReadOnlyList<TaskResult> Results => results.ToArray();
 
-    internal PersistedState Persisted() => new()
+    internal TaskProgressCounts Progress(DateOnly day)
     {
-        BaselineEstablished = BaselineEstablished,
-        ReplayNotBefore = ReplayNotBefore,
-        TerminalIds = terminalOrder.ToList(),
-        Results = results.ToList()
-    };
+        PruneDailyTasks(day);
+        var terminal = dailyTasks.Values.Where(item =>
+            DateOnly.FromDateTime(item.TerminalAt.LocalDateTime) == day).ToArray();
+        var runningToday = running.Values.Count(item =>
+            DateOnly.FromDateTime(item.StartedAt.LocalDateTime) == day);
+        return new TaskProgressCounts(
+            terminal.Count(item => !item.Interrupted),
+            terminal.Length + runningToday);
+    }
+
+    internal PersistedState Persisted()
+    {
+        PruneDailyTasks(DateOnly.FromDateTime(DateTime.Now));
+        return new PersistedState {
+            BaselineEstablished = BaselineEstablished,
+            ReplayNotBefore = ReplayNotBefore,
+            TerminalIds = terminalOrder.ToList(),
+            Results = results.ToList(),
+            DailyTasks = dailyTasks.Values.OrderByDescending(item => item.TerminalAt).ToList()
+        };
+    }
+
+    private void RecordDailyTerminal(TaskEvent taskEvent)
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        PruneDailyTasks(today);
+        var terminalDate = DateOnly.FromDateTime(taskEvent.OccurredAt.LocalDateTime);
+        if (terminalDate < today.AddDays(-(DailyHistoryDays - 1)) || terminalDate > today) return;
+        var item = new DailyTaskRecord(
+            taskEvent.Id, taskEvent.OccurredAt, taskEvent.Kind == TaskEventKind.Interrupted);
+        if (!dailyTasks.TryAdd(item.Id, item)) return;
+        dailyTaskOrder.Enqueue(item.Id);
+        while (dailyTasks.Count > DailyTaskLimit && dailyTaskOrder.TryDequeue(out var oldestId))
+            dailyTasks.Remove(oldestId);
+    }
+
+    private void PruneDailyTasks(DateOnly today)
+    {
+        if (lastDailyPruneDay == today) return;
+        var oldest = today.AddDays(-(DailyHistoryDays - 1));
+        foreach (var id in dailyTasks.Values.Where(item =>
+                     DailyDate(item) < oldest || DailyDate(item) > today)
+                 .Select(item => item.Id).ToArray())
+            dailyTasks.Remove(id);
+        var retainedIds = dailyTaskOrder.Where(dailyTasks.ContainsKey).ToArray();
+        dailyTaskOrder.Clear();
+        foreach (var id in retainedIds) dailyTaskOrder.Enqueue(id);
+        lastDailyPruneDay = today;
+    }
+
+    private static DateOnly DailyDate(DailyTaskRecord item) =>
+        DateOnly.FromDateTime(item.TerminalAt.LocalDateTime);
 }

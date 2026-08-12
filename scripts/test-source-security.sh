@@ -93,5 +93,19 @@ done
 if grep -Fq 'last_agent_message' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift; then
   fail "remote task monitor must not select or transmit completion message text"
 fi
+if grep -Fq 'preview' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
+  Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift; then
+  fail "task monitors must not select or transmit conversation preview text"
+fi
+if grep -Fq '/tmp/codexusage.log' Sources/CodexUsageWidget/main.swift Sources/CodexUsageWidget/Services/*.swift; then
+  fail "debug logs must not use a shared predictable /tmp path"
+fi
+grep -Fq 'O_NOFOLLOW' Sources/CodexUsageWidget/Services/SecureDebugLogWriter.swift \
+  || fail "secure debug logging must reject symbolic links"
+grep -Fq 'SkillFileAccessPolicy.read(path: path)' Sources/CodexUsageWidget/main.swift \
+  || fail "Skill metadata reads must use the reviewed bounded file policy"
+if grep -nF 'Data(contentsOf:' Sources/CodexUsageWidget/main.swift | grep -Fq 'skill'; then
+  fail "Skill metadata must not use an unbounded Data(contentsOf:) read"
+fi
 
 echo "source security checks passed"

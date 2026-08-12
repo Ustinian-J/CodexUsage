@@ -2,7 +2,7 @@
 
 CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows 托盘应用，用圆环/双条展示 Codex 5 小时与每周额度余量，并统计今日、近 7 天和累计 token。它还能提示任务运行、完成和未读状态，主窗口会把本机 Codex 对话和自动化任务整理成今日任务看板。
 
-> 当前版本为 `0.4.0`。项目使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
+> 当前版本为 `0.4.0`。[项目仓库](https://github.com/Ustinian-J/CodexS)使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
 
 ## 功能
 
@@ -23,7 +23,7 @@ CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows �
 - 菜单栏的数字和进度填充默认都表示剩余额度，含义与手机电量一致；胶囊底色和描边用于和其他 App 状态项分隔。
 - 未在本机显式设置订阅到期日时，界面会完全忽略该字段，不联网查询也不做推断。
 - 展示用量趋势、项目排行、工具与 Skill 使用统计。
-- 可选读取 Claude Code 本机统计；不使用时不会影响 Codex 功能。
+- 可选读取 Claude Code 本机统计；在设置中隐藏 Claude Code 后，后台不会继续扫描 `~/.claude`。
 - `Command + U` 默认显示或隐藏主窗口，可在设置中修改。
 - Windows x64 版是一个无第三方依赖的自包含 EXE，可免管理员安装到当前用户；托盘图标与 Mac 使用相同的双额度条、任务状态徽章和未读角标。
 
@@ -35,6 +35,8 @@ CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows �
 - 不读取 `~/.codex/auth.json`、Keychain、浏览器 cookie 或云凭据；启用远程监听时由系统 OpenSSH 使用现有配置，CodexS 自身不打开、复制或保存 SSH key、密码。
 - 不上传 usage、对话、任务、路径或账户数据。
 - 任务监控只提取开始、完成和中断所需字段；即使日志行包含完成回复正文 `last_agent_message`，也会忽略且绝不保存、显示、通知或上传。
+- Skill 静态统计只读取批准的本机 Skill 根目录内、大小不超过 1 MiB 的普通 `SKILL.md` 文件；拒绝符号链接、非普通文件和越界路径。
+- 调试日志仅在显式设置 `CODEXUSAGE_DEBUG=1` 时写入系统提供的当前用户临时目录，日志文件拒绝符号链接并限制为当前用户读写。
 - 唯一运行时公网请求是可选的 GitHub Release 元数据 `GET`；自动检查默认关闭。
 - 不静默下载、替换或执行更新；下载页面只能由用户主动打开。
 - CI 仅使用 GitHub 官方 Action，固定到完整提交哈希，权限为 `contents: read`，不读取 repository secrets。
@@ -54,7 +56,7 @@ CodexS 在本机读取：
 - `~/.codex/state_5.sqlite` 的线程与 token 元数据。
 - `~/.codex/sessions/**/rollout-*.jsonl` 与归档 session 中的 token/tool 元数据，以及任务开始、完成和中断事件。
 - `~/.codex/automations/**/automation.toml` 的启用状态与任务元数据。
-- 可选的 `~/.claude/` 本机 usage/task 元数据。
+- 仅在 Claude Code Runtime 可见时读取 `~/.claude/` 本机 usage/task 元数据。
 
 为保留旧版本设置与缓存，CodexS 继续使用 `com.ustinianj.codexusage` bundle ID、`CodexUsage.*` 设置键和 `~/Library/Caches/CodexUsage/` 缓存目录。应用不需要也不读取 Codex 登录 token。
 

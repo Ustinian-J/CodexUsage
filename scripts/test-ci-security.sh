@@ -47,13 +47,72 @@ if grep -R --exclude='test-security.ps1' -nE '<PackageReference|auth\.json|HttpC
   echo "Windows source contains a forbidden dependency, credential path, or downloader" >&2
   exit 1
 fi
-grep -Fq 'FileName = "ssh.exe"' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs
-grep -Fq 'RemoteHostName.Validate(host)' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs
-grep -Fq 'StrictHostKeyChecking=yes' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs
-if grep -Fq 'last_agent_message' windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs; then
-  echo "Windows remote monitor must not select message text" >&2
+WINDOWS_REMOTE_MONITOR='windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs'
+if grep -Fq 'FileName = "ssh.exe"' "$WINDOWS_REMOTE_MONITOR"; then
+  echo "Windows remote monitor must not resolve SSH through PATH" >&2
   exit 1
 fi
+for invariant in \
+  'Environment.SystemDirectory' \
+  '"OpenSSH", "ssh.exe"' \
+  'FileName = OpenSshPath' \
+  'RemoteHostName.Validate(host)' \
+  'BatchMode=yes' \
+  'StrictHostKeyChecking=yes' \
+  'ServerAliveCountMax=3' \
+  'scan_started_at' \
+  'scan_finished_at' \
+  'handle.read(CHUNK_BYTES)' \
+  'MAX_LINE_BYTES = 1048576' \
+  'ClockRolledBack' \
+  'RollbackRecoveryWindow' \
+  'isinstance(path, str)' \
+  'except FileNotFoundError:' \
+  'stat_module.S_ISDIR' \
+  'walk_errors = []' \
+  'if not initial_complete:'; do
+  grep -Fq "$invariant" "$WINDOWS_REMOTE_MONITOR" || {
+    echo "missing Windows remote safety invariant: $invariant" >&2
+    exit 1
+  }
+done
+for forbidden in 'last_agent_message' 'ReadLineAsync' 'ReadToEndAsync' 'handle.read()'; do
+  if grep -Fq "$forbidden" "$WINDOWS_REMOTE_MONITOR"; then
+    echo "Windows remote monitor contains an unbounded or sensitive operation: $forbidden" >&2
+    exit 1
+  fi
+done
+
+WINDOWS_LOCAL_MONITOR='windows/src/CodexS.Windows/CodexSessionMonitor.cs'
+for forbidden in 'CopyTo(memory)' 'new MemoryStream()' 'reducer.RemoveStaleRunning' \
+  'IgnoreInaccessible = true' '.Where(Directory.Exists)'; do
+  if grep -Fq "$forbidden" "$WINDOWS_LOCAL_MONITOR"; then
+    echo "Windows local monitor contains an obsolete unbounded or runtime-pruning operation: $forbidden" >&2
+    exit 1
+  fi
+done
+for invariant in 'File.GetAttributes(root)' 'IgnoreInaccessible = false' \
+  'ShouldPublishRemoteEventImmediately' \
+  'ScheduleStateFlushLocked' 'FlushStateAfterDelayAsync'; do
+  grep -Fq "$invariant" "$WINDOWS_LOCAL_MONITOR" || {
+    echo "missing Windows local monitor safety invariant: $invariant" >&2
+    exit 1
+  }
+done
+for invariant in 'ChunkBytes = 64 * 1024' 'MaxLineBytes = 1024 * 1024' 'DiscardingOversizedLine'; do
+  grep -Fq "$invariant" windows/src/CodexS.Windows/BoundedLineBuffer.cs || {
+    echo "missing Windows bounded-line invariant: $invariant" >&2
+    exit 1
+  }
+done
+grep -Fq 'DailyTaskLimit = 20_000' windows/src/CodexS.Windows/TaskActivityReducer.cs || {
+  echo "missing Windows daily task ledger bound" >&2
+  exit 1
+}
+grep -Fq 'terminalSet.Contains(id) || dailyTasks.ContainsKey(id)' windows/src/CodexS.Windows/TaskActivityReducer.cs || {
+  echo "missing Windows extended terminal deduplication" >&2
+  exit 1
+}
 
 if grep -Eq 'check-release-ready|notarize-dmg|APPLE_ID|NOTARY_PASSWORD' Makefile; then
   echo "Makefile references an excluded release or credential path" >&2
