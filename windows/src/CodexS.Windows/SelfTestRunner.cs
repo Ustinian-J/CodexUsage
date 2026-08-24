@@ -29,6 +29,10 @@ internal static class SelfTestRunner
                    && !RemoteHostStore.RestoresMonitoringAuthorization(3, enabled: false)
                    && !RemoteHostStore.RestoresMonitoringAuthorization(99, enabled: true),
                 "remote-monitor authorization must fail closed for legacy and unknown schemas");
+            Expect(!RemoteHostStore.RestoresMonitoringAuthorizationFromJson("""{"Enabled":true}""")
+                   && RemoteHostStore.RestoresMonitoringAuthorizationFromJson(
+                       """{"SchemaVersion":3,"Enabled":true}"""),
+                "missing remote settings schema must not inherit the current authorized version");
             Expect(RemoteConnectionRetryPolicy.DelayForFailure(0) == TimeSpan.FromSeconds(10)
                    && RemoteConnectionRetryPolicy.DelayForFailure(1) == TimeSpan.FromSeconds(30)
                    && RemoteConnectionRetryPolicy.DelayForFailure(4) == TimeSpan.FromMinutes(5)

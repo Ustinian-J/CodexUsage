@@ -71,7 +71,7 @@ internal sealed class RemoteHostStore
     private sealed class Settings
     {
         public Settings() { }
-        public int SchemaVersion { get; set; } = 3;
+        public int SchemaVersion { get; set; }
         public List<string> Hosts { get; set; } = [];
         public Dictionary<string, DateTimeOffset> Checkpoints { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public bool Enabled { get; set; }
@@ -105,9 +105,9 @@ internal sealed class RemoteHostStore
     {
         try
         {
-            if (!File.Exists(AppPaths.RemoteHostsFile)) return new Settings();
+            if (!File.Exists(AppPaths.RemoteHostsFile)) return new Settings { SchemaVersion = 3 };
             var value = JsonSerializer.Deserialize<Settings>(File.ReadAllText(AppPaths.RemoteHostsFile));
-            if (value is null) return new Settings();
+            if (value is null) return new Settings { SchemaVersion = 3 };
             var hosts = RemoteHostName.Parse(string.Join(",", value.Hosts ?? new List<string>())).ToList();
             var checkpoints = value.Checkpoints
                 ?? new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
@@ -120,12 +120,22 @@ internal sealed class RemoteHostStore
                     : new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase)
             };
         }
-        catch { return new Settings(); }
+        catch { return new Settings { SchemaVersion = 3 }; }
     }
 
     internal static bool UsesRemoteClockCheckpoints(int schemaVersion) => schemaVersion is 2 or 3;
     internal static bool RestoresMonitoringAuthorization(int schemaVersion, bool enabled) =>
         schemaVersion == 3 && enabled;
+    internal static bool RestoresMonitoringAuthorizationFromJson(string json)
+    {
+        try
+        {
+            var value = JsonSerializer.Deserialize<Settings>(json);
+            return value is not null
+                && RestoresMonitoringAuthorization(value.SchemaVersion, value.Enabled);
+        }
+        catch (JsonException) { return false; }
+    }
 
     private void Save()
     {
@@ -149,6 +159,8 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
     private int consecutiveFailures;
     private long? readyAtTimestamp;
     private string? isolatedSshConfigPath;
+    private readonly object processGate = new();
+    private bool disposed;
 
     internal event Action<TaskEvent, TaskEventOrigin>? EventArrived;
     internal event Action? ReplayStarted;
@@ -214,8 +226,13 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
         }) startInfo.ArgumentList.Add(argument);
 
         using var connection = new Process { StartInfo = startInfo };
-        if (!connection.Start()) throw new InvalidOperationException("Could not start OpenSSH");
-        process = connection;
+        lock (processGate)
+        {
+            if (disposed || token.IsCancellationRequested)
+                throw new OperationCanceledException(token);
+            if (!connection.Start()) throw new InvalidOperationException("Could not start OpenSSH");
+            process = connection;
+        }
         var stderrDrain = DrainAsync(connection.StandardError.BaseStream, token);
         var lineBuffer = new BoundedLineBuffer();
         var outputBuffer = new byte[BoundedLineBuffer.ChunkBytes];
@@ -283,7 +300,10 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
         {
             try { if (!connection.HasExited) connection.Kill(true); } catch { }
             try { await stderrDrain; } catch (OperationCanceledException) { }
-            if (ReferenceEquals(process, connection)) process = null;
+            lock (processGate)
+            {
+                if (ReferenceEquals(process, connection)) process = null;
+            }
         }
     }
 
@@ -593,10 +613,16 @@ except Exception:
 
     public void Dispose()
     {
-        cancellation.Cancel();
-        try { process?.Kill(true); } catch { }
+        Process? activeProcess;
+        lock (processGate)
+        {
+            disposed = true;
+            cancellation.Cancel();
+            activeProcess = process;
+        }
+        try { activeProcess?.Kill(true); } catch { }
         try { worker?.Wait(TimeSpan.FromSeconds(2)); } catch { }
-        process?.Dispose();
+        activeProcess?.Dispose();
         if (isolatedSshConfigPath is { } path)
         {
             try { File.Delete(path); } catch { }

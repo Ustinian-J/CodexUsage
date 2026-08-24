@@ -48,6 +48,23 @@ if grep -R --exclude='test-security.ps1' -nE '<PackageReference|auth\.json|HttpC
   exit 1
 fi
 WINDOWS_REMOTE_MONITOR='windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs'
+WINDOWS_REMOTE_CONFIG_BLOCK="$(sed -n '/File.WriteAllText(path, """/,/^[[:space:]]*""");/p' "$WINDOWS_REMOTE_MONITOR")"
+include_line="$(printf '%s\n' "$WINDOWS_REMOTE_CONFIG_BLOCK" | grep -nF 'Include ~/.ssh/config' | head -1 | cut -d: -f1)"
+[[ -n "$include_line" ]] || { echo "Windows isolated SSH config is missing Include" >&2; exit 1; }
+for option in 'ControlMaster no' 'ControlPersist no' 'ControlPath none'; do
+  option_line="$(printf '%s\n' "$WINDOWS_REMOTE_CONFIG_BLOCK" | grep -nF "$option" | head -1 | cut -d: -f1)"
+  [[ -n "$option_line" && "$option_line" -lt "$include_line" ]] || {
+    echo "Windows ProxyJump isolation option must precede Include: $option" >&2
+    exit 1
+  }
+done
+for invariant in 'lock (processGate)' 'disposed = true;' 'activeProcess?.Kill(true)' \
+  'worker?.Wait(TimeSpan.FromSeconds(2))'; do
+  grep -Fq "$invariant" "$WINDOWS_REMOTE_MONITOR" || {
+    echo "missing Windows remote shutdown invariant: $invariant" >&2
+    exit 1
+  }
+done
 if grep -Fq 'FileName = "ssh.exe"' "$WINDOWS_REMOTE_MONITOR"; then
   echo "Windows remote monitor must not resolve SSH through PATH" >&2
   exit 1
@@ -111,7 +128,8 @@ for forbidden in 'CopyTo(memory)' 'new MemoryStream()' 'reducer.RemoveStaleRunni
 done
 for invariant in 'File.GetAttributes(root)' 'IgnoreInaccessible = false' \
   'ShouldPublishRemoteEventImmediately' \
-  'ScheduleStateFlushLocked' 'FlushStateAfterDelayAsync'; do
+  'ScheduleStateFlushLocked' 'FlushStateAfterDelayAsync' \
+  'remoteMonitorIds.GetValueOrDefault(host) != monitorId'; do
   grep -Fq "$invariant" "$WINDOWS_LOCAL_MONITOR" || {
     echo "missing Windows local monitor safety invariant: $invariant" >&2
     exit 1

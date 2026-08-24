@@ -28,6 +28,13 @@ foreach ($required in @('Environment.SystemDirectory', '"OpenSSH", "ssh.exe"', '
 foreach ($forbidden in @('last_agent_message', 'ReadLineAsync', 'ReadToEndAsync', 'handle.read()')) {
     if ($remote.Contains($forbidden)) { throw "Remote monitor contains an unbounded or sensitive operation: $forbidden" }
 }
+if ($remote -notmatch 'Host \*[\s\S]*ControlMaster no[\s\S]*ControlPersist no[\s\S]*ControlPath none[\s\S]*Include ~/\.ssh/config') {
+    throw "ProxyJump isolation options must precede the included user SSH config"
+}
+foreach ($required in @('lock (processGate)', 'disposed = true;', 'activeProcess?.Kill(true)',
+        'worker?.Wait(TimeSpan.FromSeconds(2))')) {
+    if (-not $remote.Contains($required)) { throw "Remote SSH shutdown invariant changed: $required" }
+}
 
 $localMonitor = Get-Content (Join-Path $root "src/CodexS.Windows/CodexSessionMonitor.cs") -Raw
 if (-not $localMonitor.Contains('if (remoteMonitoringEnabled) SynchronizeRemoteMonitoring();')) {
@@ -42,7 +49,8 @@ foreach ($forbidden in @('CopyTo(memory)', 'new MemoryStream()', 'reducer.Remove
 }
 foreach ($required in @('File.GetAttributes(root)', 'IgnoreInaccessible = false',
         'ShouldPublishRemoteEventImmediately',
-        'ScheduleStateFlushLocked', 'FlushStateAfterDelayAsync')) {
+        'ScheduleStateFlushLocked', 'FlushStateAfterDelayAsync',
+        'remoteMonitorIds.GetValueOrDefault(host) != monitorId')) {
     if (-not $localMonitor.Contains($required)) { throw "Local monitor safety invariant changed: $required" }
 }
 $trayApplication = Get-Content (Join-Path $root "src/CodexS.Windows/TrayApplicationContext.cs") -Raw

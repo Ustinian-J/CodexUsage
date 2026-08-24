@@ -101,6 +101,21 @@ grep -Fq 'Include ~/.ssh/config' Sources/CodexUsageWidget/Services/RemoteCodexTa
   || fail "isolated SSH config no longer imports validated user aliases"
 grep -Fq 'queue.sync {' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH shutdown must finish synchronously"
+ssh_config_block="$(sed -n '/let contents = """/,/^[[:space:]]*"""/p' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift)"
+include_line="$(printf '%s\n' "$ssh_config_block" | grep -nF 'Include ~/.ssh/config' | head -1 | cut -d: -f1)"
+[[ -n "$include_line" ]] || fail "isolated SSH config is missing the user config include"
+for option in 'ControlMaster no' 'ControlPersist no' 'ControlPath none'; do
+  option_line="$(printf '%s\n' "$ssh_config_block" | grep -nF "$option" | head -1 | cut -d: -f1)"
+  [[ -n "$option_line" && "$option_line" -lt "$include_line" ]] \
+    || fail "isolated SSH option must precede the user config include: $option"
+done
+stop_block="$(sed -n '/^[[:space:]]*func stop() {/,/^[[:space:]]*private func launch()/p' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift)"
+for invariant in 'queue.sync {' 'restartWorkItem?.cancel()' 'terminationHandler = nil' 'waitUntilExit()'; do
+  printf '%s\n' "$stop_block" | grep -Fq "$invariant" \
+    || fail "remote SSH synchronous stop invariant changed: $invariant"
+done
+grep -Fq 'remoteMonitorIDs[key] == monitorID' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
+  || fail "stale remote monitor callbacks must be rejected by generation"
 grep -Fq 'static let delays: [TimeInterval] = [10, 30, 60, 120, 300]' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH reconnect backoff changed"
 grep -Fq 'guard started, remoteMonitoringEnabled else { return }' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
