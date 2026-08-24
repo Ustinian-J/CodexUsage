@@ -42,7 +42,7 @@ Static Skill inspection is limited to regular `SKILL.md` files under `~/.codex/s
 
 ## Network Scope
 
-CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexS/releases` during automatic checks when enabled or when the user manually checks for updates. After the user explicitly configures SSH hosts and clicks Refresh, CodexS opens long-lived encrypted SSH connections to those aliases solely for remote task events.
+CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexUsage/releases` during automatic checks when enabled or when the user manually checks for updates. After the user explicitly configures SSH hosts and clicks Refresh, CodexS opens long-lived encrypted SSH connections to those aliases solely for remote task events.
 
 Update requests must not include local usage, transcript, task, thread, account, path, prompt, response, tool argument, or tool output data. The update checker may send standard HTTPS headers such as `User-Agent` and `If-None-Match` for ETag caching.
 

@@ -2,7 +2,7 @@
 
 CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows 托盘应用，用圆环/双条展示 Codex 5 小时与每周额度余量，并统计今日、近 7 天和累计 token。它还能提示任务运行、完成和未读状态，主窗口会把本机 Codex 对话和自动化任务整理成今日任务看板。
 
-> 当前版本为 `0.4.1`。[项目仓库](https://github.com/Ustinian-J/CodexS)使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
+> 当前版本为 `0.4.1`。[项目仓库](https://github.com/Ustinian-J/CodexUsage)使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
 
 ## 功能
 

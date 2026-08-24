@@ -2,7 +2,7 @@
 
 CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. It shows remaining Codex 5-hour and weekly quota as rings/two bars, tracks today/7-day/lifetime tokens, reports running and completed task activity, and builds a daily task board from local Codex conversations and automations.
 
-> The current version is `0.4.1`. The [project repository](https://github.com/Ustinian-J/CodexS) is verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
+> The current version is `0.4.1`. The [project repository](https://github.com/Ustinian-J/CodexUsage) is verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
 
 ## Features
 
