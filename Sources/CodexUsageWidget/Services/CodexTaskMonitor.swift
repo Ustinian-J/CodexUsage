@@ -1,4 +1,5 @@
 import Combine
+import Darwin
 import Foundation
 
 struct CodexJSONLineBuffer {
@@ -361,6 +362,10 @@ final class CodexTaskActivityStore: ObservableObject {
             replayNotBefore = date
             publishAndPersist()
 
+        case let .inactiveLocalTasks(identities):
+            guard reducer.removeRunningTasks(localIdentities: identities) else { return }
+            publishAndPersist()
+
         case let .unavailable(message):
             sourceAvailability["local"] = .unavailable(message)
             publishAndPersist()
@@ -442,6 +447,7 @@ final class CodexTaskActivityStore: ObservableObject {
 
 private enum CodexTaskMonitorUpdate {
     case events([CodexTaskEvent], CodexTaskEventOrigin)
+    case inactiveLocalTasks(Set<String>)
     case ready
     case checkpoint(Date)
     case unavailable(String)
@@ -463,6 +469,156 @@ private enum CodexTaskReadError: Error {
     case unavailable
 }
 
+private final class CodexBoundedPipeCollector: @unchecked Sendable {
+    private let maximumBytes: Int
+    private let lock = NSLock()
+    private let finished = DispatchSemaphore(value: 0)
+    private var handle: FileHandle?
+    private var data = Data()
+    private var exceededLimit = false
+    private var didFinish = false
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = maximumBytes
+    }
+
+    func start(_ handle: FileHandle) {
+        self.handle = handle
+        handle.readabilityHandler = { [weak self] readable in
+            self?.consume(readable.availableData)
+        }
+    }
+
+    func result(timeout: DispatchTimeInterval) -> Data? {
+        guard finished.wait(timeout: .now() + timeout) == .success else {
+            cancel()
+            return nil
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return exceededLimit ? nil : data
+    }
+
+    func cancel() {
+        lock.lock()
+        let currentHandle = handle
+        handle = nil
+        lock.unlock()
+        currentHandle?.readabilityHandler = nil
+    }
+
+    private func consume(_ chunk: Data) {
+        if chunk.isEmpty {
+            lock.lock()
+            guard !didFinish else {
+                lock.unlock()
+                return
+            }
+            didFinish = true
+            let currentHandle = handle
+            handle = nil
+            lock.unlock()
+            currentHandle?.readabilityHandler = nil
+            finished.signal()
+            return
+        }
+
+        lock.lock()
+        if chunk.count <= maximumBytes - data.count {
+            data.append(chunk)
+        } else {
+            exceededLimit = true
+        }
+        lock.unlock()
+    }
+}
+
+enum CodexRolloutOpenFileProbe {
+    private static let maximumCandidateCount = 128
+    private static let maximumOutputBytes = 2 * 1_024 * 1_024
+
+    enum ProbeError: Error {
+        case unavailable
+        case invalidOutput
+    }
+
+    static func normalizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
+
+    static func parseOpenPaths(_ data: Data) -> Set<String> {
+        var paths = Set<String>()
+        for rawField in data.split(separator: 0, omittingEmptySubsequences: true) {
+            let field = rawField.drop(while: { $0 == 10 || $0 == 13 })
+            guard field.first == Character("n").asciiValue,
+                  let path = String(data: Data(field.dropFirst()), encoding: .utf8),
+                  path.hasPrefix("/")
+            else { continue }
+            paths.insert(normalizedPath(path))
+        }
+        return paths
+    }
+
+    static func run(candidatePaths: [String]) -> Result<Set<String>, ProbeError> {
+        let candidates = Array(Set(candidatePaths.map(normalizedPath))).sorted()
+        guard !candidates.isEmpty else { return .success([]) }
+        guard candidates.count <= maximumCandidateCount else { return .failure(.unavailable) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-n", "-P", "-w", "-S", "2", "-F0n", "--"] + candidates
+
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        let outputCollector = CodexBoundedPipeCollector(maximumBytes: maximumOutputBytes)
+        let errorCollector = CodexBoundedPipeCollector(maximumBytes: maximumOutputBytes)
+        outputCollector.start(output.fileHandleForReading)
+        errorCollector.start(error.fileHandleForReading)
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do {
+            try process.run()
+        } catch {
+            outputCollector.cancel()
+            errorCollector.cancel()
+            return .failure(.unavailable)
+        }
+
+        if exited.wait(timeout: .now() + 5) == .timedOut {
+            process.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 1)
+            }
+            outputCollector.cancel()
+            errorCollector.cancel()
+            return .failure(.unavailable)
+        }
+        guard let data = outputCollector.result(timeout: .seconds(1)),
+              let errorData = errorCollector.result(timeout: .seconds(1))
+        else {
+            return .failure(.invalidOutput)
+        }
+
+        guard (process.terminationStatus == 0 || process.terminationStatus == 1),
+              errorData.isEmpty
+        else {
+            return .failure(.unavailable)
+        }
+
+        let openPaths = parseOpenPaths(data).intersection(candidates)
+        if process.terminationStatus == 0, openPaths.isEmpty {
+            return .failure(.invalidOutput)
+        }
+        return .success(openPaths)
+    }
+}
+
 private final class CodexTaskMonitor {
     private let homeDirectory: URL
     private let onUpdate: (CodexTaskMonitorUpdate) -> Void
@@ -471,6 +627,9 @@ private final class CodexTaskMonitor {
     private var timer: DispatchSourceTimer?
     private var sourcesByPath: [String: CodexTaskSource] = [:]
     private var cursorsByPath: [String: CodexTaskFileCursor] = [:]
+    private var modificationDatesByPath: [String: Date] = [:]
+    private var potentialRunningIdentityByPath: [String: String] = [:]
+    private var livenessTracker = CodexTaskLivenessTracker()
     private var initialScanCompleted = false
     private var baselineEstablished: Bool
     private var tickCount = 0
@@ -505,6 +664,9 @@ private final class CodexTaskMonitor {
             self?.timer = nil
             self?.sourcesByPath.removeAll()
             self?.cursorsByPath.removeAll()
+            self?.modificationDatesByPath.removeAll()
+            self?.potentialRunningIdentityByPath.removeAll()
+            self?.livenessTracker.reset()
         }
     }
 
@@ -532,22 +694,29 @@ private final class CodexTaskMonitor {
         let discoverySucceeded = shouldDiscover ? discoverNewSources() : false
 
         var allReadsSucceeded = true
+        var successfullyReadPaths = Set<String>()
         for source in sourcesByPath.values {
             switch readAppendedEvents(from: source, onEvents: { [weak self] events, replayed in
                 guard let self else { return }
                 if replayed {
-                    self.emitReplay(events, scanWatermark: scanWatermark)
+                    self.emitReplay(events, sourcePath: source.path, scanWatermark: scanWatermark)
                 } else {
-                    self.emitSorted(events, origin: .live)
+                    self.emitSorted(events, sourcePath: source.path, origin: .live)
                 }
             }) {
             case .success:
-                break
+                successfullyReadPaths.insert(source.path)
             case .failure:
                 allReadsSucceeded = false
             }
         }
 
+        if let checkpointCandidate, discoverySucceeded {
+            reconcileLocalLiveness(
+                at: checkpointCandidate,
+                successfullyReadPaths: successfullyReadPaths
+            )
+        }
         if let checkpointCandidate, discoverySucceeded, allReadsSucceeded {
             replayNotBefore = checkpointCandidate
             onUpdate(.checkpoint(checkpointCandidate))
@@ -564,11 +733,18 @@ private final class CodexTaskMonitor {
             return
         }
 
-        sourcesByPath = Dictionary(uniqueKeysWithValues: discovered.map { ($0.path, $0) })
+        sourcesByPath = Dictionary(
+            discovered.map { ($0.path, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
         let initialScanWatermark = startedAt
         for source in discovered {
             switch readAppendedEvents(from: source, onEvents: { events, _ in
-                self.emitReplay(events, scanWatermark: initialScanWatermark)
+                self.emitReplay(
+                    events,
+                    sourcePath: source.path,
+                    scanWatermark: initialScanWatermark
+                )
             }) {
             case .success:
                 break
@@ -588,9 +764,15 @@ private final class CodexTaskMonitor {
         // Keep tailing already discovered files if SQLite is briefly busy or unavailable.
         guard case let .success(discovered) = discoverSources() else { return false }
 
-        for source in discovered {
-            sourcesByPath[source.path] = source
+        let discoveredByPath = Dictionary(
+            discovered.map { ($0.path, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
+        let removedPaths = Set(sourcesByPath.keys).subtracting(discoveredByPath.keys)
+        for path in removedPaths {
+            cursorsByPath.removeValue(forKey: path)
         }
+        sourcesByPath = discoveredByPath
         return true
     }
 
@@ -662,13 +844,15 @@ private final class CodexTaskMonitor {
                   fileManager.fileExists(atPath: path)
             else { return nil }
 
+            let normalizedPath = CodexRolloutOpenFileProbe.normalizedPath(path)
+
             let rawTitle = row["title"] as? String ?? ""
             let cwd = row["cwd"] as? String ?? ""
             let createdAtMilliseconds = (row["createdAtMs"] as? NSNumber)?.doubleValue
                 ?? Double(row["createdAtMs"] as? String ?? "")
                 ?? 0
             return CodexTaskSource(
-                path: path,
+                path: normalizedPath,
                 metadata: CodexTaskMetadata(
                     threadID: threadID,
                     title: compactTaskTitle(rawTitle),
@@ -693,6 +877,10 @@ private final class CodexTaskMonitor {
         guard let fileSizeNumber = attributes[.size] as? NSNumber else {
             return .failure(.unavailable)
         }
+        guard let modificationDate = attributes[.modificationDate] as? Date else {
+            return .failure(.unavailable)
+        }
+        modificationDatesByPath[source.path] = modificationDate
 
         let fileSize = fileSizeNumber.uint64Value
         let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
@@ -703,6 +891,7 @@ private final class CodexTaskMonitor {
             cursor.offset = 0
             cursor.fileNumber = fileNumber
             cursor.lineBuffer.reset()
+            potentialRunningIdentityByPath.removeValue(forKey: source.path)
             replayed = true
         }
         guard fileSize > cursor.offset else {
@@ -749,7 +938,11 @@ private final class CodexTaskMonitor {
         }
     }
 
-    private func emitReplay(_ events: [CodexTaskEvent], scanWatermark: Date) {
+    private func emitReplay(
+        _ events: [CodexTaskEvent],
+        sourcePath: String,
+        scanWatermark: Date
+    ) {
         let sorted = events.sorted { $0.occurredAt < $1.occurredAt }
         let grouped = Dictionary(grouping: sorted) { event in
             CodexTaskReplayPolicy.origin(
@@ -766,13 +959,85 @@ private final class CodexTaskMonitor {
                     scanWatermark: scanWatermark
                 )
             }
-            emitSorted(retained, origin: origin)
+            emitSorted(retained, sourcePath: sourcePath, origin: origin)
         }
     }
 
-    private func emitSorted(_ events: [CodexTaskEvent], origin: CodexTaskEventOrigin) {
+    private func emitSorted(
+        _ events: [CodexTaskEvent],
+        sourcePath: String,
+        origin: CodexTaskEventOrigin
+    ) {
         guard !events.isEmpty else { return }
-        onUpdate(.events(events.sorted { $0.occurredAt < $1.occurredAt }, origin))
+        let sorted = events.sorted { $0.occurredAt < $1.occurredAt }
+        for event in sorted {
+            switch event.kind {
+            case .started:
+                potentialRunningIdentityByPath[sourcePath] = event.identity
+            case .completed, .aborted:
+                if potentialRunningIdentityByPath[sourcePath] == event.identity {
+                    potentialRunningIdentityByPath.removeValue(forKey: sourcePath)
+                }
+            }
+        }
+        onUpdate(.events(sorted, origin))
+    }
+
+    private func reconcileLocalLiveness(
+        at sampledAt: Date,
+        successfullyReadPaths: Set<String>
+    ) {
+        let pathsByIdentity = Dictionary(
+            grouping: potentialRunningIdentityByPath.keys,
+            by: { potentialRunningIdentityByPath[$0]! }
+        )
+        let verifiablePaths = pathsByIdentity.values
+            .filter { paths in
+                paths.allSatisfy {
+                    modificationDatesByPath[$0] != nil
+                        && (sourcesByPath[$0] == nil || successfullyReadPaths.contains($0))
+                }
+            }
+            .flatMap { $0 }
+        guard !verifiablePaths.isEmpty else {
+            livenessTracker.reset()
+            return
+        }
+
+        let candidatePaths = verifiablePaths.filter { sourcesByPath[$0] != nil }
+        let openPaths: Set<String>
+        switch CodexRolloutOpenFileProbe.run(candidatePaths: candidatePaths) {
+        case let .success(paths):
+            openPaths = paths
+        case .failure:
+            livenessTracker.reset()
+            return
+        }
+
+        let observations = verifiablePaths.compactMap { path -> CodexTaskLivenessObservation? in
+            guard let taskIdentity = potentialRunningIdentityByPath[path],
+                  let modificationDate = modificationDatesByPath[path]
+            else { return nil }
+            return CodexTaskLivenessObservation(
+                taskIdentity: taskIdentity,
+                modificationDate: modificationDate,
+                isOpen: openPaths.contains(path)
+            )
+        }
+        guard observations.count == verifiablePaths.count else {
+            livenessTracker.reset()
+            return
+        }
+
+        let inactiveIdentities = livenessTracker.observe(observations, at: sampledAt)
+        guard !inactiveIdentities.isEmpty else { return }
+        potentialRunningIdentityByPath = potentialRunningIdentityByPath.filter { _, identity in
+            !inactiveIdentities.contains(identity)
+        }
+        modificationDatesByPath = modificationDatesByPath.filter { path, _ in
+            potentialRunningIdentityByPath[path] != nil || sourcesByPath[path] != nil
+        }
+        onUpdate(.inactiveLocalTasks(inactiveIdentities))
     }
 }
 

@@ -12,11 +12,11 @@ grep -q '^APP_NAME := CodexS$' Makefile
 /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' Resources/Info.plist \
   | grep -qx 'CodexS'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist \
-  | grep -qx '0.4.0'
+  | grep -qx '0.4.1'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist \
-  | grep -qx '7'
-grep -q '当前版本为 `0.4.0`' README.md
-grep -q 'The current version is `0.4.0`' README.en.md
+  | grep -qx '8'
+grep -q '当前版本为 `0.4.1`' README.md
+grep -q 'The current version is `0.4.1`' README.en.md
 grep -q 'owner: String = "Ustinian-J"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
 grep -q 'repo: String = "CodexS"' Sources/CodexUsageWidget/Services/GitHubReleaseUpdateChecker.swift
 grep -q 'automaticUpdateChecksEnabled = false' Sources/CodexUsageWidget/main.swift
@@ -43,8 +43,8 @@ for obsolete_symbol in \
   fi
 done
 grep -q '<AssemblyName>CodexS</AssemblyName>' windows/src/CodexS.Windows/CodexS.Windows.csproj
-grep -q '<Version>0.4.0</Version>' windows/src/CodexS.Windows/CodexS.Windows.csproj
-grep -q 'CodexS-0.4.0-windows-x64.exe' .github/workflows/windows.yml
+grep -q '<Version>0.4.1</Version>' windows/src/CodexS.Windows/CodexS.Windows.csproj
+grep -q 'CodexS-0.4.1-windows-x64.exe' .github/workflows/windows.yml
 
 identity_files=(Makefile)
 while IFS= read -r file; do

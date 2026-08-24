@@ -254,6 +254,50 @@ struct CodexTaskActivityTransition {
     static let unchanged = CodexTaskActivityTransition(changed: false, newCompletion: nil)
 }
 
+struct CodexTaskLivenessObservation: Equatable {
+    let taskIdentity: String
+    let modificationDate: Date
+    let isOpen: Bool
+}
+
+struct CodexTaskLivenessTracker {
+    static let silenceGrace: TimeInterval = 30
+    static let requiredClosedSamples = 2
+
+    private var closedSamplesByTaskIdentity: [String: Int] = [:]
+
+    mutating func observe(
+        _ observations: [CodexTaskLivenessObservation],
+        at sampledAt: Date
+    ) -> Set<String> {
+        let grouped = Dictionary(grouping: observations, by: \.taskIdentity)
+        closedSamplesByTaskIdentity = closedSamplesByTaskIdentity.filter { grouped[$0.key] != nil }
+
+        var inactive = Set<String>()
+        for (taskIdentity, taskObservations) in grouped {
+            let isOpen = taskObservations.contains(where: \.isOpen)
+            let isRecentlyModified = taskObservations.contains {
+                sampledAt.timeIntervalSince($0.modificationDate) < Self.silenceGrace
+            }
+            if isOpen || isRecentlyModified {
+                closedSamplesByTaskIdentity.removeValue(forKey: taskIdentity)
+                continue
+            }
+
+            let closedSamples = (closedSamplesByTaskIdentity[taskIdentity] ?? 0) + 1
+            closedSamplesByTaskIdentity[taskIdentity] = closedSamples
+            if closedSamples >= Self.requiredClosedSamples {
+                inactive.insert(taskIdentity)
+            }
+        }
+        return inactive
+    }
+
+    mutating func reset() {
+        closedSamplesByTaskIdentity.removeAll()
+    }
+}
+
 struct CodexTaskActivityReducer {
     private static let completionLimit = 50
     private static let terminalIdentityLimit = 8_192
@@ -358,6 +402,17 @@ struct CodexTaskActivityReducer {
     mutating func removeRunningTasks(sourceLabel: String) -> Bool {
         let identities = runningByIdentity.values
             .filter { $0.sourceLabel?.caseInsensitiveCompare(sourceLabel) == .orderedSame }
+            .map(\.id)
+        guard !identities.isEmpty else { return false }
+        for identity in identities {
+            runningByIdentity.removeValue(forKey: identity)
+        }
+        return true
+    }
+
+    mutating func removeRunningTasks(localIdentities: Set<String>) -> Bool {
+        let identities = runningByIdentity.values
+            .filter { $0.sourceLabel == nil && localIdentities.contains($0.id) }
             .map(\.id)
         guard !identities.isEmpty else { return false }
         for identity in identities {

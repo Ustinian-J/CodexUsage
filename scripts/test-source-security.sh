@@ -72,7 +72,7 @@ done <<< "$ssh_files"
 
 process_matches="$(grep -nF 'Process()' "${source_code_files[@]}" || true)"
 process_count="$(printf '%s\n' "$process_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
-[[ "$process_count" == "5" ]] || fail "Process launch surface changed: expected 5 reviewed sites, found $process_count"
+[[ "$process_count" == "6" ]] || fail "Process launch surface changed: expected 6 reviewed sites, found $process_count"
 
 grep -Fq 'process.arguments = ["app-server"]' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed Codex app-server launch changed"
@@ -80,6 +80,10 @@ grep -Fq 'let grepPath = "/usr/bin/grep"' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed grep launch changed"
 grep -Fq 'process.arguments = ["-readonly", "-json", dbPath, query]' Sources/CodexUsageWidget/Services/ReadOnlySQLite.swift \
   || fail "reviewed read-only SQLite launch changed"
+grep -Fq 'process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
+  || fail "reviewed rollout liveness executable changed"
+grep -Fq 'process.arguments = ["-n", "-P", "-w", "-S", "2", "-F0n", "--"] + candidates' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
+  || fail "reviewed rollout liveness arguments changed"
 grep -Fq 'helper.executableURL = executableURL' Sources/CodexUsageWidget/Domain/GlobalShortcutSelfTest.swift \
   || fail "reviewed self-test helper launch changed"
 grep -Fq 'process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \

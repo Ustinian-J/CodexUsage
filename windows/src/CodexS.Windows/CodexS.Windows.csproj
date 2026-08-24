@@ -7,9 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexS</AssemblyName>
     <RootNamespace>CodexS.Windows</RootNamespace>
-    <Version>0.4.0</Version>
-    <FileVersion>0.4.0.7</FileVersion>
-    <AssemblyVersion>0.4.0.0</AssemblyVersion>
+    <Version>0.4.1</Version>
+    <FileVersion>0.4.1.8</FileVersion>
+    <AssemblyVersion>0.4.1.0</AssemblyVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
