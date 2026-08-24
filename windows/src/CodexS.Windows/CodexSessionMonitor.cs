@@ -25,6 +25,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     private readonly RemoteHostStore remoteHostStore = new();
     private readonly TaskActivityReducer reducer;
     private readonly Dictionary<string, RemoteCodexTaskMonitor> remoteMonitors = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<string> configuredRemoteHosts;
     private readonly Dictionary<string, (bool Ready, string? Message)> remoteStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> remoteReplays = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cancellation = new();
@@ -46,7 +47,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     internal CodexSessionMonitor()
     {
         reducer = new TaskActivityReducer(stateStore.Load(), startedAt);
-        SynchronizeRemoteHosts(remoteHostStore.Hosts, persist: false);
+        configuredRemoteHosts = remoteHostStore.Hosts.ToArray();
     }
 
     internal void Start()
@@ -61,11 +62,50 @@ internal sealed class CodexSessionMonitor : IDisposable
 
     internal string RemoteHostsText
     {
-        get { lock (gate) return string.Join(", ", remoteMonitors.Keys.Order(StringComparer.OrdinalIgnoreCase)); }
+        get { lock (gate) return string.Join(", ", configuredRemoteHosts); }
     }
 
     internal void SetRemoteHosts(string rawValue) =>
-        SynchronizeRemoteHosts(RemoteHostName.Parse(rawValue), persist: true);
+        ConfigureRemoteHosts(RemoteHostName.Parse(rawValue));
+
+    internal void RefreshRemoteMonitoring()
+    {
+        List<RemoteCodexTaskMonitor> removed;
+        IReadOnlyList<string> hosts;
+        lock (gate)
+        {
+            hosts = configuredRemoteHosts.ToArray();
+            removed = [];
+            foreach (var host in remoteMonitors.Keys.ToArray())
+            {
+                if (remoteStatus.GetValueOrDefault(host).Ready)
+                {
+                    remoteMonitors[host].ResetAttemptBudget();
+                    continue;
+                }
+                removed.Add(remoteMonitors[host]);
+                remoteMonitors.Remove(host);
+                remoteStatus.Remove(host);
+                remoteReplays.Remove(host);
+            }
+        }
+        foreach (var monitor in removed) monitor.Dispose();
+
+        List<RemoteCodexTaskMonitor> added = [];
+        lock (gate)
+        {
+            foreach (var host in hosts)
+            {
+                if (remoteMonitors.ContainsKey(host)) continue;
+                var monitor = CreateRemoteMonitor(host);
+                remoteMonitors[host] = monitor;
+                remoteStatus[host] = (false, $"正在连接远程任务主机 {host}（1/{RemoteConnectionRetryPolicy.MaximumAttempts}）");
+                added.Add(monitor);
+            }
+            PublishLocked();
+        }
+        foreach (var monitor in added) monitor.Start();
+    }
 
     internal void SetQuota(QuotaWindow? five, QuotaWindow? seven, bool stale, string? message)
     {
@@ -328,7 +368,7 @@ internal sealed class CodexSessionMonitor : IDisposable
         return new UsageSnapshot(
             fiveHour, sevenDay, todayTokens, sevenTokens, tokensByDay.Values.Sum(),
             reducer.Running, reducer.Results, progress.Completed, progress.Total, allSourcesReady, monitorMessage,
-            remoteMonitors.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray(), quotaStale, statusMessage);
+            configuredRemoteHosts, quotaStale, statusMessage);
     }
 
     private void PublishLocked() => SnapshotChanged?.Invoke(MakeSnapshot());
@@ -414,12 +454,12 @@ internal sealed class CodexSessionMonitor : IDisposable
             && totalElement.TryGetInt64(out current);
     }
 
-    private void SynchronizeRemoteHosts(IReadOnlyList<string> hosts, bool persist)
+    private void ConfigureRemoteHosts(IReadOnlyList<string> hosts)
     {
         List<RemoteCodexTaskMonitor> removed = [];
-        List<RemoteCodexTaskMonitor> added = [];
         lock (gate)
         {
+            configuredRemoteHosts = hosts.ToArray();
             var desired = new HashSet<string>(hosts, StringComparer.OrdinalIgnoreCase);
             foreach (var host in remoteMonitors.Keys.Where(host => !desired.Contains(host)).ToArray())
             {
@@ -429,25 +469,22 @@ internal sealed class CodexSessionMonitor : IDisposable
                 remoteReplays.Remove(host);
                 reducer.RemoveSource(host);
             }
-            foreach (var host in hosts)
-            {
-                if (remoteMonitors.ContainsKey(host)) continue;
-                var monitor = new RemoteCodexTaskMonitor(host, remoteHostStore.Checkpoint(host));
-                monitor.EventArrived += (taskEvent, origin) => RemoteEventArrived(taskEvent, origin);
-                monitor.ReplayStarted += () => RemoteReplayStarted(host);
-                monitor.Ready += checkpoint => RemoteReady(host, checkpoint);
-                monitor.Unavailable += message => RemoteUnavailable(host, message);
-                remoteMonitors[host] = monitor;
-                remoteStatus[host] = (false, $"正在连接远程任务主机 {host}");
-                added.Add(monitor);
-            }
-            if (persist) remoteHostStore.SaveHosts(hosts);
+            remoteHostStore.SaveHosts(hosts);
             stateStore.Save(reducer.Persisted());
             stateDirty = false;
             PublishLocked();
         }
         foreach (var monitor in removed) monitor.Dispose();
-        foreach (var monitor in added) monitor.Start();
+    }
+
+    private RemoteCodexTaskMonitor CreateRemoteMonitor(string host)
+    {
+        var monitor = new RemoteCodexTaskMonitor(host, remoteHostStore.Checkpoint(host));
+        monitor.EventArrived += (taskEvent, origin) => RemoteEventArrived(taskEvent, origin);
+        monitor.ReplayStarted += () => RemoteReplayStarted(host);
+        monitor.Ready += checkpoint => RemoteReady(host, checkpoint);
+        monitor.Unavailable += message => RemoteUnavailable(host, message);
+        return monitor;
     }
 
     private void RemoteEventArrived(TaskEvent taskEvent, TaskEventOrigin origin)

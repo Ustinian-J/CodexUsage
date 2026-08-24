@@ -277,6 +277,20 @@ enum CodexTaskActivitySelfTest {
         )
         expect(CodexRemoteHost.validated("-oProxyCommand=bad") == nil, "SSH option injection must be rejected")
         expect(CodexRemoteHost.validated("host;touch") == nil, "remote shell metacharacters must be rejected")
+        var attemptBudget = RemoteConnectionAttemptBudget()
+        expect(
+            attemptBudget.beginAttempt() == 1
+                && attemptBudget.beginAttempt() == 2
+                && attemptBudget.beginAttempt() == 3
+                && attemptBudget.beginAttempt() == nil
+                && !attemptBudget.canRetry,
+            "one manual remote-monitor cycle must allow exactly three connection attempts"
+        )
+        attemptBudget.reset()
+        expect(
+            attemptBudget.beginAttempt() == 1 && attemptBudget.canRetry,
+            "a later manual refresh must reset the three-attempt budget"
+        )
         let remoteScript = RemoteCodexTaskMonitor.remoteScript
         expect(
             remoteScript.contains("if not isinstance(root, dict):")

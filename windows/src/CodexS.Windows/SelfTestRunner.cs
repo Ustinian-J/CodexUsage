@@ -23,6 +23,12 @@ internal static class SelfTestRunner
             Expect(!RemoteHostStore.UsesRemoteClockCheckpoints(1)
                    && RemoteHostStore.UsesRemoteClockCheckpoints(2),
                 "legacy local-clock remote checkpoints must be discarded");
+            Expect(RemoteConnectionRetryPolicy.CanAttempt(0)
+                   && RemoteConnectionRetryPolicy.CanAttempt(1)
+                   && RemoteConnectionRetryPolicy.CanAttempt(2)
+                   && !RemoteConnectionRetryPolicy.CanAttempt(3)
+                   && !RemoteConnectionRetryPolicy.CanAttempt(-1),
+                "one manual remote-monitor cycle must allow exactly three connection attempts");
 
             var lineBuffer = new BoundedLineBuffer();
             Expect(lineBuffer.Append("{\"kind\":"u8).Count == 0, "partial line must remain buffered");

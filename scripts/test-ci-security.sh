@@ -60,6 +60,9 @@ for invariant in \
   'BatchMode=yes' \
   'StrictHostKeyChecking=yes' \
   'ServerAliveCountMax=3' \
+  'ControlMaster=no' \
+  'ControlPath=none' \
+  'MaximumAttempts = 3' \
   'scan_started_at' \
   'scan_finished_at' \
   'handle.read(CHUNK_BYTES)' \
@@ -76,6 +79,15 @@ for invariant in \
     exit 1
   }
 done
+grep -Fq 'monitor.RefreshRemoteMonitoring();' windows/src/CodexS.Windows/TrayApplicationContext.cs || {
+  echo "Windows manual refresh no longer authorizes remote monitoring" >&2
+  exit 1
+}
+if grep -A8 -F 'internal CodexSessionMonitor()' windows/src/CodexS.Windows/CodexSessionMonitor.cs \
+  | grep -Fq 'RefreshRemoteMonitoring()'; then
+  echo "Windows application startup must not authorize remote monitoring" >&2
+  exit 1
+fi
 for forbidden in 'last_agent_message' 'ReadLineAsync' 'ReadToEndAsync' 'handle.read()'; do
   if grep -Fq "$forbidden" "$WINDOWS_REMOTE_MONITOR"; then
     echo "Windows remote monitor contains an unbounded or sensitive operation: $forbidden" >&2

@@ -26,6 +26,7 @@ enum CodexTaskIdentifier {
 
 enum CodexTaskMonitorAvailability: Equatable {
     case starting
+    case connecting(Int, Int)
     case ready
     case unavailable(String)
 }

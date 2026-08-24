@@ -51,7 +51,7 @@ internal sealed class DashboardForm : Form
             : value.Running.Count > 0 ? Color.FromArgb(244, 74, 90) : Color.FromArgb(55, 196, 123);
         if (!value.TaskMonitorReady && !string.IsNullOrWhiteSpace(value.TaskMonitorMessage))
             taskState.Text = $"— {value.TaskMonitorMessage}";
-        taskCounts.Text = $"{value.Running.Count} 个执行中  ·  {value.UnreadCount} 条未读  ·  今日进度 {value.TodayCompletedCount}/{value.TodayTaskCount}  ·  {value.RemoteHosts.Count} 台远程";
+        taskCounts.Text = $"{value.Running.Count} 个执行中  ·  {value.UnreadCount} 条未读  ·  今日进度 {value.TodayCompletedCount}/{value.TodayTaskCount}  ·  {value.RemoteHosts.Count} 台远程配置";
         if (!remoteHosts.Focused) remoteHosts.Text = string.Join(", ", value.RemoteHosts);
         footerStatus.Text = value.QuotaStale
             ? $"额度等待刷新 · {value.StatusMessage ?? "保留上次可信值"}"

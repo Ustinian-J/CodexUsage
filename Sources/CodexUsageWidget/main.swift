@@ -3772,6 +3772,7 @@ struct TitlebarToolbarView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
+    let onRefresh: () -> Void
     let onOpenSettings: () -> Void
 
     private var language: WidgetLanguage { settings.language }
@@ -3794,10 +3795,10 @@ struct TitlebarToolbarView: View {
             HStack(spacing: 2) {
                 HeaderActionButton(
                     systemName: store.isRefreshing ? "hourglass" : "arrow.clockwise",
-                    help: language.text("刷新", "Refresh"),
+                    help: language.text("刷新额度并启动远程监听", "Refresh usage and remote monitoring"),
                     accessibilityLabel: language.text("刷新", "Refresh")
                 ) {
-                    store.refresh()
+                    onRefresh()
                 }
                 .disabled(store.isRefreshing)
 
@@ -3986,7 +3987,10 @@ struct SettingsPanelView: View {
                         ),
                         value: settings.remoteTaskHosts.isEmpty
                             ? language.text("未启用", "Off")
-                            : language.text("已启用 \(settings.remoteTaskHosts.count) 台", "\(settings.remoteTaskHosts.count) enabled")
+                            : language.text(
+                                "已配置 \(settings.remoteTaskHosts.count) 台 · 点击刷新后监听",
+                                "\(settings.remoteTaskHosts.count) configured · Refresh to monitor"
+                            )
                     )
                 }
 
@@ -8987,6 +8991,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             rootView: TitlebarToolbarView(
                 store: store,
                 settings: settings,
+                onRefresh: { [weak self] in
+                    self?.refreshFromUserAction()
+                },
                 onOpenSettings: { [weak self] in
                     self?.openSettingsWindow()
                 }
@@ -9017,6 +9024,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         unregisterGlobalHotKey()
         taskActivityStore.stop()
         store.stop()
+    }
+
+    private func refreshFromUserAction() {
+        taskActivityStore.refreshRemoteMonitoring()
+        store.refresh()
     }
 
     func toggleMainWindow() {
@@ -9352,6 +9364,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 store: store,
                 settings: settings,
                 taskActivityStore: taskActivityStore,
+                refresh: { [weak self] in
+                    self?.refreshFromUserAction()
+                },
                 openRuntime: { [weak self] scope in
                     self?.openMainWindow(selecting: scope)
                 },
