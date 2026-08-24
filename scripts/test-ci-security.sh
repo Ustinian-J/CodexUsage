@@ -61,8 +61,11 @@ for invariant in \
   'StrictHostKeyChecking=yes' \
   'ServerAliveCountMax=3' \
   'ControlMaster=no' \
+  'ControlPersist=no' \
   'ControlPath=none' \
-  'MaximumAttempts = 3' \
+  '"-F", sshConfigPath' \
+  'Include ~/.ssh/config' \
+  'TimeSpan.FromMinutes(5)' \
   'scan_started_at' \
   'scan_finished_at' \
   'handle.read(CHUNK_BYTES)' \
@@ -80,14 +83,17 @@ for invariant in \
   }
 done
 grep -Fq 'monitor.RefreshRemoteMonitoring();' windows/src/CodexS.Windows/TrayApplicationContext.cs || {
-  echo "Windows manual refresh no longer authorizes remote monitoring" >&2
+  echo "Windows manual refresh no longer reconnects authorized remote monitoring" >&2
   exit 1
 }
-if grep -A8 -F 'internal CodexSessionMonitor()' windows/src/CodexS.Windows/CodexSessionMonitor.cs \
-  | grep -Fq 'RefreshRemoteMonitoring()'; then
-  echo "Windows application startup must not authorize remote monitoring" >&2
+grep -Fq 'if (remoteMonitoringEnabled) SynchronizeRemoteMonitoring();' windows/src/CodexS.Windows/CodexSessionMonitor.cs || {
+  echo "Windows application startup no longer restores explicit remote-monitor authorization" >&2
   exit 1
-fi
+}
+grep -Fq 'if (!remoteMonitoringEnabled) return;' windows/src/CodexS.Windows/CodexSessionMonitor.cs || {
+  echo "Windows remote monitoring no longer requires explicit persisted authorization" >&2
+  exit 1
+}
 for forbidden in 'last_agent_message' 'ReadLineAsync' 'ReadToEndAsync' 'handle.read()'; do
   if grep -Fq "$forbidden" "$WINDOWS_REMOTE_MONITOR"; then
     echo "Windows remote monitor contains an unbounded or sensitive operation: $forbidden" >&2

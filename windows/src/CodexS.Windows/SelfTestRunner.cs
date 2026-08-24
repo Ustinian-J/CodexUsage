@@ -21,14 +21,21 @@ internal static class SelfTestRunner
                        Environment.SystemDirectory, "OpenSSH", "ssh.exe"),
                 "system OpenSSH path must not use PATH lookup");
             Expect(!RemoteHostStore.UsesRemoteClockCheckpoints(1)
-                   && RemoteHostStore.UsesRemoteClockCheckpoints(2),
+                   && RemoteHostStore.UsesRemoteClockCheckpoints(2)
+                   && RemoteHostStore.UsesRemoteClockCheckpoints(3),
                 "legacy local-clock remote checkpoints must be discarded");
-            Expect(RemoteConnectionRetryPolicy.CanAttempt(0)
-                   && RemoteConnectionRetryPolicy.CanAttempt(1)
-                   && RemoteConnectionRetryPolicy.CanAttempt(2)
-                   && !RemoteConnectionRetryPolicy.CanAttempt(3)
-                   && !RemoteConnectionRetryPolicy.CanAttempt(-1),
-                "one manual remote-monitor cycle must allow exactly three connection attempts");
+            Expect(!RemoteHostStore.RestoresMonitoringAuthorization(2, enabled: true)
+                   && RemoteHostStore.RestoresMonitoringAuthorization(3, enabled: true)
+                   && !RemoteHostStore.RestoresMonitoringAuthorization(3, enabled: false)
+                   && !RemoteHostStore.RestoresMonitoringAuthorization(99, enabled: true),
+                "remote-monitor authorization must fail closed for legacy and unknown schemas");
+            Expect(RemoteConnectionRetryPolicy.DelayForFailure(0) == TimeSpan.FromSeconds(10)
+                   && RemoteConnectionRetryPolicy.DelayForFailure(1) == TimeSpan.FromSeconds(30)
+                   && RemoteConnectionRetryPolicy.DelayForFailure(4) == TimeSpan.FromMinutes(5)
+                   && RemoteConnectionRetryPolicy.DelayForFailure(20) == TimeSpan.FromMinutes(5)
+                   && RemoteConnectionRetryPolicy.NormalizeFailures(4, TimeSpan.FromMinutes(1)) == 0
+                   && RemoteConnectionRetryPolicy.NormalizeFailures(4, TimeSpan.FromSeconds(59)) == 4,
+                "remote reconnects must use capped backoff and reset after a stable connection");
 
             var lineBuffer = new BoundedLineBuffer();
             Expect(lineBuffer.Append("{\"kind\":"u8).Count == 0, "partial line must remain buffered");

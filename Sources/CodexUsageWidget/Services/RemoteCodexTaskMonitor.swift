@@ -27,23 +27,27 @@ enum RemoteCodexTaskMonitorUpdate {
     case unavailable(String)
 }
 
-struct RemoteConnectionAttemptBudget {
-    static let maximumAttempts = 3
+struct RemoteConnectionBackoff {
+    static let delays: [TimeInterval] = [10, 30, 60, 120, 300]
+    static let stableConnectionInterval: TimeInterval = 60
 
-    private(set) var attempts = 0
+    private(set) var consecutiveFailures = 0
 
     mutating func reset() {
-        attempts = 0
+        consecutiveFailures = 0
     }
 
-    mutating func beginAttempt() -> Int? {
-        guard attempts < Self.maximumAttempts else { return nil }
-        attempts += 1
-        return attempts
+    var connectionStage: Int {
+        min(consecutiveFailures + 1, Self.delays.count)
     }
 
-    var canRetry: Bool {
-        attempts < Self.maximumAttempts
+    mutating func recordFailure(readyDuration: TimeInterval?) -> TimeInterval {
+        if let readyDuration, readyDuration >= Self.stableConnectionInterval {
+            reset()
+        }
+        let delay = Self.delays[min(consecutiveFailures, Self.delays.count - 1)]
+        consecutiveFailures += 1
+        return delay
     }
 }
 
@@ -152,10 +156,12 @@ final class RemoteCodexTaskMonitor {
     private var replayWindow: RemoteCodexReplayWindow?
     private var recoveryCheckpoint: Date?
     private var streamReady = false
+    private var readyAtUptime: TimeInterval?
     private var stopped = false
     private var authorizationGeneration = 0
     private var connectionGeneration = 0
-    private var attemptBudget = RemoteConnectionAttemptBudget()
+    private var connectionBackoff = RemoteConnectionBackoff()
+    private var isolatedSSHConfigURL: URL?
 
     init(
         host: String,
@@ -172,22 +178,22 @@ final class RemoteCodexTaskMonitor {
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
             if self.process != nil, self.streamReady {
-                self.attemptBudget.reset()
                 return
             }
             self.authorizationGeneration += 1
-            self.attemptBudget.reset()
+            self.connectionBackoff.reset()
             self.restartWorkItem?.cancel()
             self.restartWorkItem = nil
             self.process?.terminationHandler = nil
             self.process?.terminate()
+            if self.process?.isRunning == true { self.process?.waitUntilExit() }
             self.process = nil
             self.launch()
         }
     }
 
     func stop() {
-        queue.async {
+        queue.sync {
             self.stopped = true
             self.authorizationGeneration += 1
             self.connectionGeneration += 1
@@ -195,9 +201,14 @@ final class RemoteCodexTaskMonitor {
             self.restartWorkItem = nil
             self.process?.terminationHandler = nil
             self.process?.terminate()
+            if self.process?.isRunning == true { self.process?.waitUntilExit() }
             self.process = nil
             self.lineBuffer.reset()
             self.replayWindow = nil
+            if let isolatedSSHConfigURL = self.isolatedSSHConfigURL {
+                try? FileManager.default.removeItem(at: isolatedSSHConfigURL)
+                self.isolatedSSHConfigURL = nil
+            }
         }
     }
 
@@ -208,15 +219,15 @@ final class RemoteCodexTaskMonitor {
             onUpdate(.unavailable("远程任务主机配置无效：\(host)"))
             return
         }
-        guard let attempt = attemptBudget.beginAttempt() else {
-            reportAttemptsExhausted()
+        guard let sshConfigPath = prepareIsolatedSSHConfig()?.path else {
+            onUpdate(.unavailable("无法建立隔离的 SSH 配置，远程监听未启动"))
             return
         }
-
         streamReady = false
+        readyAtUptime = nil
         lineBuffer.reset()
         replayWindow = nil
-        onUpdate(.connecting(attempt, RemoteConnectionAttemptBudget.maximumAttempts))
+        onUpdate(.connecting(connectionBackoff.connectionStage, RemoteConnectionBackoff.delays.count))
         connectionGeneration += 1
         let authorization = authorizationGeneration
         let connection = connectionGeneration
@@ -226,6 +237,7 @@ final class RemoteCodexTaskMonitor {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = [
+            "-F", sshConfigPath,
             "-T",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=8",
@@ -233,6 +245,7 @@ final class RemoteCodexTaskMonitor {
             "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "ControlMaster=no",
+            "-o", "ControlPersist=no",
             "-o", "ControlPath=none",
             host,
             Self.remoteCommand
@@ -335,6 +348,7 @@ final class RemoteCodexTaskMonitor {
 
     private func finishReplay(scanStartedAt: Date) {
         streamReady = true
+        readyAtUptime = ProcessInfo.processInfo.systemUptime
         replayWindow = nil
         recoveryCheckpoint = scanStartedAt
         onUpdate(.ready(scanStartedAt))
@@ -348,24 +362,20 @@ final class RemoteCodexTaskMonitor {
 
     private func handleConnectionFailure() {
         guard !stopped else { return }
-        guard attemptBudget.canRetry else {
-            reportAttemptsExhausted()
-            return
+        let readyDuration = readyAtUptime.map {
+            max(0, ProcessInfo.processInfo.systemUptime - $0)
         }
+        streamReady = false
+        readyAtUptime = nil
+        let delay = connectionBackoff.recordFailure(readyDuration: readyDuration)
         onUpdate(.unavailable(
-            "远程任务主机 \(host) 连接失败，10 秒后重试（\(attemptBudget.attempts + 1)/\(RemoteConnectionAttemptBudget.maximumAttempts)）"
+            "远程任务主机 \(host) 连接中断，\(Self.retryDelayText(delay))后自动重试"
         ))
-        scheduleRestart()
+        scheduleRestart(after: delay)
     }
 
-    private func reportAttemptsExhausted() {
-        onUpdate(.unavailable(
-            "远程任务主机 \(host) 已尝试 \(RemoteConnectionAttemptBudget.maximumAttempts) 次，监听已停止；点击刷新重试"
-        ))
-    }
-
-    private func scheduleRestart() {
-        guard !stopped, attemptBudget.canRetry, restartWorkItem == nil else { return }
+    private func scheduleRestart(after delay: TimeInterval) {
+        guard !stopped, restartWorkItem == nil else { return }
         let generation = authorizationGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -377,7 +387,39 @@ final class RemoteCodexTaskMonitor {
             self.launch()
         }
         restartWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + 10, execute: workItem)
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private static func retryDelayText(_ delay: TimeInterval) -> String {
+        delay >= 60 ? "\(Int(delay / 60)) 分钟" : "\(Int(delay)) 秒"
+    }
+
+    private func prepareIsolatedSSHConfig() -> URL? {
+        if let isolatedSSHConfigURL { return isolatedSSHConfigURL }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexS-ssh", isDirectory: true)
+        let url = directory.appendingPathComponent(UUID().uuidString + ".conf")
+        let contents = """
+        Host *
+            ControlMaster no
+            ControlPersist no
+            ControlPath none
+        Include ~/.ssh/config
+        """
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try Data(contents.utf8).write(to: url, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            isolatedSSHConfigURL = url
+            return url
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
     }
 
     private static func shellQuote(_ value: String) -> String {

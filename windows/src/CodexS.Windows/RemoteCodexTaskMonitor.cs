@@ -50,10 +50,20 @@ internal static class RemoteReplayPolicy
 
 internal static class RemoteConnectionRetryPolicy
 {
-    internal const int MaximumAttempts = 3;
+    internal static readonly TimeSpan[] Delays = [
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30),
+        TimeSpan.FromMinutes(1),
+        TimeSpan.FromMinutes(2),
+        TimeSpan.FromMinutes(5)
+    ];
+    internal static readonly TimeSpan StableConnectionInterval = TimeSpan.FromMinutes(1);
 
-    internal static bool CanAttempt(int completedAttempts) =>
-        completedAttempts >= 0 && completedAttempts < MaximumAttempts;
+    internal static int NormalizeFailures(int consecutiveFailures, TimeSpan? readyDuration) =>
+        readyDuration >= StableConnectionInterval ? 0 : Math.Max(0, consecutiveFailures);
+
+    internal static TimeSpan DelayForFailure(int consecutiveFailures) =>
+        Delays[Math.Min(Math.Max(0, consecutiveFailures), Delays.Length - 1)];
 }
 
 internal sealed class RemoteHostStore
@@ -61,19 +71,27 @@ internal sealed class RemoteHostStore
     private sealed class Settings
     {
         public Settings() { }
-        public int SchemaVersion { get; set; } = 2;
+        public int SchemaVersion { get; set; } = 3;
         public List<string> Hosts { get; set; } = [];
         public Dictionary<string, DateTimeOffset> Checkpoints { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public bool Enabled { get; set; }
     }
 
     private Settings settings = LoadSettings();
 
     internal IReadOnlyList<string> Hosts => settings.Hosts;
+    internal bool Enabled => settings.Enabled;
     internal DateTimeOffset? Checkpoint(string host) => settings.Checkpoints.GetValueOrDefault(host);
 
     internal void SaveHosts(IReadOnlyList<string> hosts)
     {
         settings.Hosts = hosts.ToList();
+        Save();
+    }
+
+    internal void SaveEnabled(bool enabled)
+    {
+        settings.Enabled = enabled;
         Save();
     }
 
@@ -94,7 +112,9 @@ internal sealed class RemoteHostStore
             var checkpoints = value.Checkpoints
                 ?? new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
             return new Settings {
+                SchemaVersion = 3,
                 Hosts = hosts,
+                Enabled = RestoresMonitoringAuthorization(value.SchemaVersion, value.Enabled),
                 Checkpoints = UsesRemoteClockCheckpoints(value.SchemaVersion)
                     ? new Dictionary<string, DateTimeOffset>(checkpoints, StringComparer.OrdinalIgnoreCase)
                     : new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase)
@@ -103,7 +123,9 @@ internal sealed class RemoteHostStore
         catch { return new Settings(); }
     }
 
-    internal static bool UsesRemoteClockCheckpoints(int schemaVersion) => schemaVersion == 2;
+    internal static bool UsesRemoteClockCheckpoints(int schemaVersion) => schemaVersion is 2 or 3;
+    internal static bool RestoresMonitoringAuthorization(int schemaVersion, bool enabled) =>
+        schemaVersion == 3 && enabled;
 
     private void Save()
     {
@@ -124,7 +146,9 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
     private DateTimeOffset? recoveryCheckpoint;
     private Task? worker;
     private Process? process;
-    private int completedAttempts;
+    private int consecutiveFailures;
+    private long? readyAtTimestamp;
+    private string? isolatedSshConfigPath;
 
     internal event Action<TaskEvent, TaskEventOrigin>? EventArrived;
     internal event Action? ReplayStarted;
@@ -139,57 +163,33 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
 
     internal void Start() => worker ??= Task.Run(RunAsync);
 
-    internal void ResetAttemptBudget() => Interlocked.Exchange(ref completedAttempts, 0);
-
     private async Task RunAsync()
     {
         while (!cancellation.IsCancellationRequested)
         {
-            if (!TryBeginConnectionAttempt(out var attempt))
-            {
-                ReportAttemptsExhausted();
-                break;
-            }
+            var stage = Math.Min(consecutiveFailures + 1, RemoteConnectionRetryPolicy.Delays.Length);
             Unavailable?.Invoke(
-                $"正在连接远程任务主机 {host}（{attempt}/{RemoteConnectionRetryPolicy.MaximumAttempts}）");
+                $"正在连接远程任务主机 {host}（重连阶段 {stage}/{RemoteConnectionRetryPolicy.Delays.Length}）");
+            readyAtTimestamp = null;
             try { await RunConnectionAsync(cancellation.Token); }
             catch (OperationCanceledException) { break; }
             catch { }
             if (cancellation.IsCancellationRequested) break;
-            Unavailable?.Invoke($"远程任务主机 {host} 暂时不可用");
-            if (!RemoteConnectionRetryPolicy.CanAttempt(Volatile.Read(ref completedAttempts)))
-            {
-                ReportAttemptsExhausted();
-                break;
-            }
-            var nextAttempt = Volatile.Read(ref completedAttempts) + 1;
+            var readyDuration = readyAtTimestamp is { } started
+                ? Stopwatch.GetElapsedTime(started) : (TimeSpan?)null;
+            consecutiveFailures = RemoteConnectionRetryPolicy.NormalizeFailures(
+                consecutiveFailures, readyDuration);
+            var delay = RemoteConnectionRetryPolicy.DelayForFailure(consecutiveFailures);
+            consecutiveFailures++;
             Unavailable?.Invoke(
-                $"远程任务主机 {host} 连接失败，10 秒后重试（{nextAttempt}/{RemoteConnectionRetryPolicy.MaximumAttempts}）");
-            try { await Task.Delay(TimeSpan.FromSeconds(10), cancellation.Token); }
+                $"远程任务主机 {host} 连接中断，{RetryDelayText(delay)}后自动重试");
+            try { await Task.Delay(delay, cancellation.Token); }
             catch (OperationCanceledException) { break; }
         }
     }
 
-    private bool TryBeginConnectionAttempt(out int attempt)
-    {
-        while (true)
-        {
-            var completed = Volatile.Read(ref completedAttempts);
-            if (!RemoteConnectionRetryPolicy.CanAttempt(completed))
-            {
-                attempt = 0;
-                return false;
-            }
-            if (Interlocked.CompareExchange(ref completedAttempts, completed + 1, completed) == completed)
-            {
-                attempt = completed + 1;
-                return true;
-            }
-        }
-    }
-
-    private void ReportAttemptsExhausted() => Unavailable?.Invoke(
-        $"远程任务主机 {host} 已尝试 {RemoteConnectionRetryPolicy.MaximumAttempts} 次，监听已停止；点击刷新重试");
+    private static string RetryDelayText(TimeSpan delay) => delay.TotalMinutes >= 1
+        ? $"{(int)delay.TotalMinutes} 分钟" : $"{(int)delay.TotalSeconds} 秒";
 
     private async Task RunConnectionAsync(CancellationToken token)
     {
@@ -197,6 +197,7 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
             throw new InvalidOperationException("Invalid SSH host alias");
         if (!File.Exists(OpenSshPath))
             throw new FileNotFoundException("System OpenSSH client is unavailable", OpenSshPath);
+        var sshConfigPath = PrepareIsolatedSshConfig();
 
         var startInfo = new ProcessStartInfo {
             FileName = OpenSshPath,
@@ -206,10 +207,10 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
             CreateNoWindow = true
         };
         foreach (var argument in new[] {
-            "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            "-F", sshConfigPath, "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=yes", "-o", "ControlMaster=no",
-            "-o", "ControlPath=none", host, RemoteCommand
+            "-o", "ControlPersist=no", "-o", "ControlPath=none", host, RemoteCommand
         }) startInfo.ArgumentList.Add(argument);
 
         using var connection = new Process { StartInfo = startInfo };
@@ -257,6 +258,7 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
                             || activeScanStart != scanStart || scanFinish < scanStart)
                             throw new InvalidDataException("Remote ready watermark is invalid");
                         streamReady = true;
+                        readyAtTimestamp = Stopwatch.GetTimestamp();
                         recoveryCheckpoint = scanStart;
                         Ready?.Invoke(scanStart);
                         continue;
@@ -289,6 +291,23 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
     {
         var buffer = new byte[BoundedLineBuffer.ChunkBytes];
         while (await stream.ReadAsync(buffer, token) > 0) { }
+    }
+
+    private string PrepareIsolatedSshConfig()
+    {
+        if (isolatedSshConfigPath is { } existing && File.Exists(existing)) return existing;
+        var directory = Path.Combine(Path.GetTempPath(), "CodexS-ssh");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, $"{Guid.NewGuid():N}.conf");
+        File.WriteAllText(path, """
+            Host *
+                ControlMaster no
+                ControlPersist no
+                ControlPath none
+            Include ~/.ssh/config
+            """);
+        isolatedSshConfigPath = path;
+        return path;
     }
 
     internal static bool TryUnixTime(double? seconds, out DateTimeOffset value)
@@ -578,6 +597,11 @@ except Exception:
         try { process?.Kill(true); } catch { }
         try { worker?.Wait(TimeSpan.FromSeconds(2)); } catch { }
         process?.Dispose();
+        if (isolatedSshConfigPath is { } path)
+        {
+            try { File.Delete(path); } catch { }
+            isolatedSshConfigPath = null;
+        }
         cancellation.Dispose();
     }
 }

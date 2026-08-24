@@ -17,7 +17,8 @@ if ($remote.Contains('FileName = "ssh.exe"')) {
 }
 foreach ($required in @('Environment.SystemDirectory', '"OpenSSH", "ssh.exe"', 'FileName = OpenSshPath',
         'BatchMode=yes', 'StrictHostKeyChecking=yes', 'ServerAliveCountMax=3',
-        'ControlMaster=no', 'ControlPath=none', 'MaximumAttempts = 3',
+        'ControlMaster=no', 'ControlPersist=no', 'ControlPath=none', 'TimeSpan.FromMinutes(5)',
+        '"-F", sshConfigPath', 'Include ~/.ssh/config',
         'RemoteHostName.Validate(host)', 'scan_started_at', 'scan_finished_at',
         'handle.read(CHUNK_BYTES)', 'MAX_LINE_BYTES = 1048576', 'ClockRolledBack',
         'RollbackRecoveryWindow', 'isinstance(path, str)', 'except FileNotFoundError:',
@@ -29,8 +30,11 @@ foreach ($forbidden in @('last_agent_message', 'ReadLineAsync', 'ReadToEndAsync'
 }
 
 $localMonitor = Get-Content (Join-Path $root "src/CodexS.Windows/CodexSessionMonitor.cs") -Raw
-if ($localMonitor -match 'internal CodexSessionMonitor\(\)[\s\S]{0,300}RefreshRemoteMonitoring\(\)') {
-    throw "Application startup must not authorize remote monitoring"
+if (-not $localMonitor.Contains('if (remoteMonitoringEnabled) SynchronizeRemoteMonitoring();')) {
+    throw "Application startup must restore explicit remote-monitor authorization"
+}
+if (-not $localMonitor.Contains('if (!remoteMonitoringEnabled) return;')) {
+    throw "Remote monitoring must remain disabled without explicit persisted authorization"
 }
 foreach ($forbidden in @('CopyTo(memory)', 'new MemoryStream()', 'reducer.RemoveStaleRunning',
         'IgnoreInaccessible = true', '.Where(Directory.Exists)')) {
@@ -43,7 +47,7 @@ foreach ($required in @('File.GetAttributes(root)', 'IgnoreInaccessible = false'
 }
 $trayApplication = Get-Content (Join-Path $root "src/CodexS.Windows/TrayApplicationContext.cs") -Raw
 if (-not $trayApplication.Contains('monitor.RefreshRemoteMonitoring();')) {
-    throw "Manual refresh no longer authorizes remote monitoring"
+    throw "Manual refresh no longer reconnects authorized remote monitoring"
 }
 $bounded = Get-Content (Join-Path $root "src/CodexS.Windows/BoundedLineBuffer.cs") -Raw
 foreach ($required in @('ChunkBytes = 64 * 1024', 'MaxLineBytes = 1024 * 1024', 'DiscardingOversizedLine')) {

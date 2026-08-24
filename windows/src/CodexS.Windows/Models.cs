@@ -42,12 +42,13 @@ internal sealed record UsageSnapshot(
     bool TaskMonitorReady,
     string? TaskMonitorMessage,
     IReadOnlyList<string> RemoteHosts,
+    bool RemoteMonitoringEnabled,
     bool QuotaStale,
     string? StatusMessage)
 {
     internal static readonly UsageSnapshot Starting = new(
         null, null, 0, 0, 0, [], [], 0, 0, false,
-        "正在读取 Codex 本地数据", [], true, "正在读取 Codex 本地数据");
+        "正在读取 Codex 本地数据", [], false, true, "正在读取 Codex 本地数据");
 
     internal int UnreadCount => Results.Count(item => item.ReadAt is null);
 }

@@ -2,14 +2,14 @@
 
 CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. It shows remaining Codex 5-hour and weekly quota as rings/two bars, tracks today/7-day/lifetime tokens, reports running and completed task activity, and builds a daily task board from local Codex conversations and automations.
 
-> The current version is `0.4.1`. The [project repository](https://github.com/Ustinian-J/CodexUsage) is verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
+> The current version is `0.4.2`. The [project repository](https://github.com/Ustinian-J/CodexUsage) is verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
 
 ## Features
 
 - Live 5-hour and 7-day quota rings with the remaining percentage in each ring.
 - A single menu-bar state badge: red/play means running, green/check means idle, and gray/dash means unavailable. Unread completion is an independent blinking amber diamond, so running and unread remain visible together. The popover retains labeled red/yellow/green lights.
 - Incremental local Codex task monitoring, optional native completion/interruption notifications, and a “Mark all read” action that clears yellow attention.
-- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config`, then click Refresh to start monitoring and show `@host`, project, and running/completed/interrupted state. Each manual cycle makes at most three connection attempts, then stops until the next manual refresh.
+- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config` and enable automatic remote monitoring. CodexS keeps one system OpenSSH connection per host; after a disconnect it backs off through 10 seconds, 30 seconds, 1 minute, 2 minutes, and a 5-minute cap. Turning the switch off immediately stops CodexS-owned connections and future retries.
 - Reset countdowns, used/remaining display modes, and multiple menu bar densities.
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
 - A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.
@@ -19,7 +19,7 @@ CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. I
 - An account-cycle dashboard for 5-hour and 7-day reset times, plan type, reset-credit details, and subscription expiry countdown.
 - Opt-in local subscription-expiry tracking because the current official `account/read` schema does not expose that date; it is never uploaded.
 - The menu bar popover switches directly between Codex and Claude Code and renders only one runtime at a time; Codex reset and account details never appear in the Claude Code view.
-- The popover shows separate 5h and 7d next-reset rows plus running, unread, and recent task activity. “Open Main Window” opens CodexS itself.
+- The popover shows separate 5h and 7d next-reset rows plus only traffic-light state and running/unread counts; it does not show a task list. “Open Main Window” opens CodexS itself.
 - Menu bar percentages and progress fills represent remaining quota by default, like a battery indicator; a capsule background and outline separate CodexS from adjacent status items.
 - Subscription expiry is completely omitted until explicitly configured on the local Mac; the app neither queries the web nor infers a date.
 - Usage trends, project rankings, and tool/Skill statistics.

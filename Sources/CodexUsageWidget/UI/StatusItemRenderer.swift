@@ -96,7 +96,17 @@ struct StatusItemRenderer {
         NSBezierPath(rect: NSRect(x: regionX + 0.5, y: 4, width: 1, height: 14)).fill()
 
         let stateRect = NSRect(x: regionX + 3.5, y: 5.5, width: 10.5, height: 10.5)
-        if !indicator.monitorIsReady {
+        if indicator.showsRed {
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: stateRect).fill()
+            NSColor.white.withAlphaComponent(0.94).setFill()
+            let play = NSBezierPath()
+            play.move(to: NSPoint(x: stateRect.minX + 4.1, y: stateRect.minY + 3))
+            play.line(to: NSPoint(x: stateRect.maxX - 2.8, y: stateRect.midY))
+            play.line(to: NSPoint(x: stateRect.minX + 4.1, y: stateRect.maxY - 3))
+            play.close()
+            play.fill()
+        } else if !indicator.monitorIsReady {
             NSColor.secondaryLabelColor.withAlphaComponent(0.62).setStroke()
             let outline = NSBezierPath(ovalIn: stateRect.insetBy(dx: 0.6, dy: 0.6))
             outline.lineWidth = 1.2
@@ -107,16 +117,6 @@ struct StatusItemRenderer {
             dash.line(to: NSPoint(x: stateRect.maxX - 3, y: stateRect.midY))
             dash.lineWidth = 1.2
             dash.stroke()
-        } else if indicator.showsRed {
-            NSColor.systemRed.setFill()
-            NSBezierPath(ovalIn: stateRect).fill()
-            NSColor.white.withAlphaComponent(0.94).setFill()
-            let play = NSBezierPath()
-            play.move(to: NSPoint(x: stateRect.minX + 4.1, y: stateRect.minY + 3))
-            play.line(to: NSPoint(x: stateRect.maxX - 2.8, y: stateRect.midY))
-            play.line(to: NSPoint(x: stateRect.minX + 4.1, y: stateRect.maxY - 3))
-            play.close()
-            play.fill()
         } else {
             NSColor.systemGreen.setFill()
             NSBezierPath(ovalIn: stateRect).fill()

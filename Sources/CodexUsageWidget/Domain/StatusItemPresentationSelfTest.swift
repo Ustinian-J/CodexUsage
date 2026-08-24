@@ -168,6 +168,22 @@ enum StatusItemPresentationSelfTest {
         expect(!activeTaskPresentation.taskIndicator.showsGreen, "running task must turn off the green signal")
         expect(!activeTaskPresentation.taskIndicator.yellowIsBright, "yellow pulse phase must enter the presentation model")
         expect(activeTaskPresentation.accessibilityValue.contains("1 个任务执行中"), "task counts must be exposed to VoiceOver")
+        let reconnectingTaskPresentation = builder.build(
+            source: source,
+            preferences: .default,
+            language: .zh,
+            taskActivity: CodexTaskActivitySnapshot(
+                availability: .unavailable("remote reconnecting"),
+                runningTasks: activeTaskSnapshot.runningTasks,
+                recentCompletions: []
+            ),
+            now: now
+        )
+        expect(
+            !reconnectingTaskPresentation.taskIndicator.monitorIsReady
+                && reconnectingTaskPresentation.taskIndicator.showsRed,
+            "a known running task must remain red while another monitor reconnects"
+        )
 
         var usedPreferences = StatusItemPreferences.default
         usedPreferences.quotaMode = .used

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-08-24
+
+- Restored automatic local-and-remote task monitoring behind an explicit persistent switch on macOS and Windows.
+- Replaced repeated fixed-interval SSH retries with one long-lived connection per host and capped 10-second-to-5-minute reconnect backoff; disabling monitoring cancels CodexS-owned connections and retries.
+- Kept known running tasks red even while another source is reconnecting, instead of hiding activity behind an unavailable badge.
+- Simplified the macOS menu popover to traffic-light state and running/unread counts without task titles, projects, timestamps, or result rows; the full task board remains in the main window.
+
 ## 0.4.1 - 2026-08-24
 
 - Fixed a stuck red task light by reconciling orphaned local starts only after the rollout has been quiet for 30 seconds and two bounded checks confirm that no process still holds it open.

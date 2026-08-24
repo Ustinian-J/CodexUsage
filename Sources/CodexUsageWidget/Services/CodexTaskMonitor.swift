@@ -241,9 +241,11 @@ final class CodexTaskActivityStore: ObservableObject {
     private var replayNotBefore: Date?
     private var localMonitor: CodexTaskMonitor?
     private var remoteMonitors: [String: RemoteCodexTaskMonitor] = [:]
+    private var remoteMonitorIDs: [String: UUID] = [:]
     private var remoteCheckpoints: [String: Date]
     private var sourceAvailability: [String: CodexTaskMonitorAvailability] = ["local": .starting]
     private var configuredRemoteHosts: [String] = []
+    private var remoteMonitoringEnabled = false
     private var started = false
 
     init(
@@ -263,10 +265,11 @@ final class CodexTaskActivityStore: ObservableObject {
         self.snapshot = reducer.snapshot(availability: .starting)
     }
 
-    func start(remoteHosts: [String] = []) {
+    func start(remoteHosts: [String] = [], remoteMonitoringEnabled: Bool = false) {
         guard !started else { return }
         started = true
         configuredRemoteHosts = normalizedRemoteHosts(remoteHosts)
+        self.remoteMonitoringEnabled = remoteMonitoringEnabled
         let monitor = CodexTaskMonitor(
             homeDirectory: homeDirectory,
             baselineEstablished: baselineEstablished,
@@ -278,6 +281,7 @@ final class CodexTaskActivityStore: ObservableObject {
         }
         self.localMonitor = monitor
         monitor.start()
+        if remoteMonitoringEnabled { synchronizeRemoteMonitors() }
         publishAndPersist()
     }
 
@@ -287,6 +291,7 @@ final class CodexTaskActivityStore: ObservableObject {
         localMonitor = nil
         for monitor in remoteMonitors.values { monitor.stop() }
         remoteMonitors.removeAll()
+        remoteMonitorIDs.removeAll()
         sourceAvailability = ["local": .starting]
     }
 
@@ -296,28 +301,40 @@ final class CodexTaskActivityStore: ObservableObject {
         configuredRemoteHosts = normalized
         guard started else { return }
         removeUnconfiguredRemoteMonitors()
+        if remoteMonitoringEnabled { synchronizeRemoteMonitors() }
+        publishAndPersist()
+    }
+
+    func setRemoteMonitoringEnabled(_ enabled: Bool) {
+        guard enabled != remoteMonitoringEnabled else { return }
+        remoteMonitoringEnabled = enabled
+        guard started else { return }
+        if enabled {
+            synchronizeRemoteMonitors()
+        } else {
+            for (key, monitor) in remoteMonitors {
+                monitor.stop()
+                sourceAvailability.removeValue(forKey: "remote:\(key)")
+                _ = reducer.removeRunningTasks(sourceLabel: key)
+            }
+            remoteMonitors.removeAll()
+            remoteMonitorIDs.removeAll()
+        }
         publishAndPersist()
     }
 
     func refreshRemoteMonitoring() {
-        guard started else { return }
+        guard started, remoteMonitoringEnabled else { return }
         removeUnconfiguredRemoteMonitors()
         for host in configuredRemoteHosts {
             let key = host.lowercased()
             if let monitor = remoteMonitors[key] {
-                monitor.authorize()
-                continue
+                if sourceAvailability["remote:\(key)"] == .ready { continue }
+                remoteMonitorIDs.removeValue(forKey: key)
+                remoteMonitors.removeValue(forKey: key)
+                monitor.stop()
             }
-            let monitor = RemoteCodexTaskMonitor(
-                host: host,
-                recoveryCheckpoint: remoteCheckpoints[key]
-            ) { [weak self] update in
-                DispatchQueue.main.sync {
-                    self?.handleRemote(update, host: host)
-                }
-            }
-            remoteMonitors[key] = monitor
-            monitor.authorize()
+            startRemoteMonitor(host: host)
         }
     }
 
@@ -372,11 +389,14 @@ final class CodexTaskActivityStore: ObservableObject {
         }
     }
 
-    private func handleRemote(_ update: RemoteCodexTaskMonitorUpdate, host: String) {
-        guard configuredRemoteHosts.contains(where: {
+    private func handleRemote(_ update: RemoteCodexTaskMonitorUpdate, host: String, monitorID: UUID) {
+        let key = host.lowercased()
+        guard remoteMonitoringEnabled,
+              remoteMonitorIDs[key] == monitorID,
+              configuredRemoteHosts.contains(where: {
             $0.caseInsensitiveCompare(host) == .orderedSame
         }) else { return }
-        let sourceID = "remote:\(host.lowercased())"
+        let sourceID = "remote:\(key)"
         switch update {
         case let .events(events, origin):
             var changed = false
@@ -410,9 +430,34 @@ final class CodexTaskActivityStore: ObservableObject {
         let removedKeys = remoteMonitors.keys.filter { !desired.contains($0) }
         for key in removedKeys {
             remoteMonitors.removeValue(forKey: key)?.stop()
+            remoteMonitorIDs.removeValue(forKey: key)
             sourceAvailability.removeValue(forKey: "remote:\(key)")
             _ = reducer.removeRunningTasks(sourceLabel: key)
         }
+    }
+
+    private func synchronizeRemoteMonitors() {
+        removeUnconfiguredRemoteMonitors()
+        for host in configuredRemoteHosts where remoteMonitors[host.lowercased()] == nil {
+            startRemoteMonitor(host: host)
+        }
+    }
+
+    private func startRemoteMonitor(host: String) {
+        let key = host.lowercased()
+        let monitorID = UUID()
+        sourceAvailability["remote:\(key)"] = .starting
+        let monitor = RemoteCodexTaskMonitor(
+            host: host,
+            recoveryCheckpoint: remoteCheckpoints[key]
+        ) { [weak self] update in
+            DispatchQueue.main.async {
+                self?.handleRemote(update, host: host, monitorID: monitorID)
+            }
+        }
+        remoteMonitors[key] = monitor
+        remoteMonitorIDs[key] = monitorID
+        monitor.authorize()
     }
 
     private func normalizedRemoteHosts(_ hosts: [String]) -> [String] {
@@ -436,7 +481,8 @@ final class CodexTaskActivityStore: ObservableObject {
     private func publishAndPersist() {
         snapshot = reducer.snapshot(
             availability: combinedAvailability(),
-            remoteHosts: configuredRemoteHosts
+            remoteHosts: configuredRemoteHosts,
+            remoteMonitoringEnabled: remoteMonitoringEnabled
         )
         persistence.save(reducer.persistedState(
             baselineEstablished: baselineEstablished,

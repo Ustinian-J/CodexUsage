@@ -28,7 +28,7 @@ internal static class Installer
             using (var key = Registry.CurrentUser.CreateSubKey(UninstallKey))
             {
                 key.SetValue("DisplayName", "CodexS");
-                key.SetValue("DisplayVersion", "0.4.1");
+                key.SetValue("DisplayVersion", "0.4.2");
                 key.SetValue("Publisher", "Ustinian-J");
                 key.SetValue("InstallLocation", AppPaths.InstallDirectory);
                 key.SetValue("DisplayIcon", AppPaths.InstalledExecutable);

@@ -4,7 +4,6 @@ struct TaskActivityCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var store: CodexTaskActivityStore
     let language: WidgetLanguage
-    let onOpenCodex: () -> Void
 
     private var snapshot: CodexTaskActivitySnapshot { store.snapshot }
 
@@ -30,6 +29,10 @@ struct TaskActivityCard: View {
                 }
             }
 
+            if snapshot.runningCount > 0 || snapshot.unreadCount > 0 {
+                activitySummary
+            }
+
             switch snapshot.availability {
             case .starting:
                 compactMessage(
@@ -40,8 +43,8 @@ struct TaskActivityCard: View {
                 compactMessage(
                     icon: "network",
                     text: language.text(
-                        "正在连接远程任务（\(attempt)/\(maximum)）…",
-                        "Connecting to remote tasks (\(attempt)/\(maximum))…"
+                        "正在恢复远程监听（退避级别 \(attempt)/\(maximum)）…",
+                        "Restoring remote monitoring (backoff level \(attempt)/\(maximum))…"
                     )
                 )
             case let .unavailable(message):
@@ -50,7 +53,9 @@ struct TaskActivityCard: View {
                     text: language.text(message, "Task monitoring is temporarily unavailable")
                 )
             case .ready:
-                completionContent
+                if snapshot.runningCount == 0, snapshot.unreadCount == 0 {
+                    activitySummary
+                }
             }
         }
         .padding(10)
@@ -64,78 +69,36 @@ struct TaskActivityCard: View {
         )
     }
 
-    @ViewBuilder
-    private var completionContent: some View {
-        let items = Array(snapshot.recentCompletions.prefix(3))
-        if items.isEmpty {
-            compactMessage(
-                icon: snapshot.runningCount > 0 ? "gearshape.2" : "checkmark.circle",
-                text: snapshot.runningCount > 0
-                    ? language.text("Codex 正在处理任务，完成后会在这里提醒", "Codex is working; completed tasks will appear here")
-                    : language.text("当前空闲，没有未查看的完成任务", "Idle with no unreviewed completed tasks")
-            )
-        } else {
-            VStack(spacing: 5) {
-                ForEach(items) { completion in
-                    completionRow(completion)
-                }
-            }
-            if snapshot.recentCompletions.count > items.count {
-                Text(language.text(
-                    "另有 \(snapshot.recentCompletions.count - items.count) 条记录",
-                    "\(snapshot.recentCompletions.count - items.count) more records"
-                ))
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-        }
+    private var activitySummary: some View {
+        compactMessage(icon: activityIcon, text: activityText)
     }
 
-    private func completionRow(_ completion: CodexTaskCompletion) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: completion.outcome == .completed ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(completion.outcome == .completed ? WidgetPalette.statusSuccess : WidgetPalette.statusWarning)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(completion.title)
-                    .font(.system(size: 9, weight: completion.readAt == nil ? .semibold : .medium))
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    if let sourceLabel = completion.sourceLabel {
-                        Text("@\(sourceLabel)")
-                    }
-                    if let projectName = completion.projectName {
-                        Text(projectName)
-                    }
-                    Text(completion.completedAt, style: .time)
-                }
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 6)
-            if completion.readAt == nil {
-                Circle()
-                    .fill(WidgetPalette.statusWarning)
-                    .frame(width: 5, height: 5)
-            }
-            Button(completion.sourceLabel == nil
-                ? language.text("已读并打开", "Read & open")
-                : language.text("标为已读", "Mark read")) {
-                store.markRead(completion.id)
-                if completion.sourceLabel == nil { onOpenCodex() }
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(WidgetPalette.brandPrimary)
+    private var activityIcon: String {
+        if snapshot.runningCount > 0 { return "gearshape.2" }
+        if snapshot.unreadCount > 0 { return "bell.badge" }
+        return "checkmark.circle"
+    }
+
+    private var activityText: String {
+        if snapshot.runningCount > 0, snapshot.unreadCount > 0 {
+            return language.text(
+                "\(snapshot.runningCount) 个任务执行中 · \(snapshot.unreadCount) 个任务已完成待查看",
+                "\(snapshot.runningCount) running · \(snapshot.unreadCount) completed and unread"
+            )
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(WidgetPalette.controlFill(colorScheme))
-        )
+        if snapshot.runningCount > 0 {
+            return language.text(
+                "\(snapshot.runningCount) 个任务正在执行",
+                "\(snapshot.runningCount) task(s) running"
+            )
+        }
+        if snapshot.unreadCount > 0 {
+            return language.text(
+                "\(snapshot.unreadCount) 个任务已完成，等待查看",
+                "\(snapshot.unreadCount) completed task(s) waiting to be viewed"
+            )
+        }
+        return language.text("当前空闲，没有未读完成提醒", "Idle with no unread completions")
     }
 
     private func compactMessage(icon: String, text: String) -> some View {
@@ -164,13 +127,13 @@ struct TaskActivityCard: View {
             return language.text("正在启动", "Starting")
         case let .connecting(attempt, maximum):
             return language.text(
-                "远程连接 \(attempt)/\(maximum)",
-                "Remote connection \(attempt)/\(maximum)"
+                "远程监听恢复中 · 退避级别 \(attempt)/\(maximum)",
+                "Restoring remote monitoring · backoff level \(attempt)/\(maximum)"
             )
         case .unavailable:
             return language.text("监控不可用", "Monitor unavailable")
         case .ready:
-            let source = snapshot.remoteHosts.isEmpty
+            let source = snapshot.remoteHosts.isEmpty || !snapshot.remoteMonitoringEnabled
                 ? language.text("本机", "Local")
                 : language.text(
                     "本机 + \(snapshot.remoteHosts.count) 远程配置",

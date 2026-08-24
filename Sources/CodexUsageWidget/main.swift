@@ -2932,6 +2932,7 @@ final class AppSettings: ObservableObject {
     private static let quotaAlertsEnabledKey = "CodexUsage.quotaAlerts.enabled"
     private static let taskCompletionAlertsEnabledKey = "CodexUsage.taskCompletionAlerts.enabled"
     private static let remoteTaskHostsKey = "CodexUsage.remoteTaskHosts.v1"
+    private static let remoteMonitoringEnabledKey = "CodexUsage.remoteMonitoring.enabled.v1"
     private static let subscriptionExpirationEnabledKey = "CodexUsage.subscriptionExpiration.enabled"
     private static let subscriptionExpirationDateKey = "CodexUsage.subscriptionExpiration.date"
     private static let skippedUpdateVersionKey = "CodexUsage.update.skippedVersion"
@@ -2990,6 +2991,12 @@ final class AppSettings: ObservableObject {
     @Published var remoteTaskHostsText: String {
         didSet {
             defaults.set(remoteTaskHostsText, forKey: Self.remoteTaskHostsKey)
+        }
+    }
+
+    @Published var remoteMonitoringEnabled: Bool {
+        didSet {
+            defaults.set(remoteMonitoringEnabled, forKey: Self.remoteMonitoringEnabledKey)
         }
     }
 
@@ -3058,6 +3065,7 @@ final class AppSettings: ObservableObject {
             taskCompletionAlertsEnabled = defaults.bool(forKey: Self.taskCompletionAlertsEnabledKey)
         }
         remoteTaskHostsText = defaults.string(forKey: Self.remoteTaskHostsKey) ?? ""
+        remoteMonitoringEnabled = defaults.bool(forKey: Self.remoteMonitoringEnabledKey)
         if defaults.object(forKey: Self.subscriptionExpirationEnabledKey) == nil {
             subscriptionExpirationEnabled = false
         } else {
@@ -3847,6 +3855,15 @@ struct SettingsPanelView: View {
                     title: language.text("通用", "General"),
                     detail: language.text("界面偏好", "Interface")
                 ) {
+                    SettingsToggleRow(
+                        title: language.text("自动监听远程任务", "Monitor remote tasks automatically"),
+                        detail: language.text(
+                            "每台主机保持一条 SSH 长连接；断线后最长每 5 分钟重试一次",
+                            "Keeps one SSH connection per host; retries at most once every 5 minutes when offline"
+                        )
+                    ) {
+                        SettingsSwitchToggle(isOn: $settings.remoteMonitoringEnabled)
+                    }
                     SettingsPickerRow(
                         title: language.text("语言", "Language"),
                         detail: language.text("影响主窗口、浮窗和设置窗口", "Applies to the main window, menu popover, and settings")
@@ -3987,9 +4004,11 @@ struct SettingsPanelView: View {
                         ),
                         value: settings.remoteTaskHosts.isEmpty
                             ? language.text("未启用", "Off")
+                            : !settings.remoteMonitoringEnabled
+                            ? language.text("已关闭自动监听", "Automatic monitoring off")
                             : language.text(
-                                "已配置 \(settings.remoteTaskHosts.count) 台 · 点击刷新后监听",
-                                "\(settings.remoteTaskHosts.count) configured · Refresh to monitor"
+                                "已监听 \(settings.remoteTaskHosts.count) 台",
+                                "Monitoring \(settings.remoteTaskHosts.count) configured host(s)"
                             )
                     )
                 }
@@ -8952,7 +8971,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             _ = installGlobalHotKeyHandler()
         }
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
-        taskActivityStore.start(remoteHosts: settings.remoteTaskHosts)
+        taskActivityStore.start(
+            remoteHosts: settings.remoteTaskHosts,
+            remoteMonitoringEnabled: settings.remoteMonitoringEnabled
+        )
         store.start()
         updateStore.startAutomaticCheck()
     }
@@ -9321,6 +9343,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] hosts in
                 self?.taskActivityStore.configureRemoteHosts(hosts)
+            }
+            .store(in: &cancellables)
+
+        settings.$remoteMonitoringEnabled
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.taskActivityStore.setRemoteMonitoringEnabled(enabled)
             }
             .store(in: &cancellables)
 

@@ -78,8 +78,7 @@ struct RuntimeStatusMenuView: View {
             header
             TaskActivityCard(
                 store: taskActivityStore,
-                language: language,
-                onOpenCodex: openCurrent
+                language: language
             )
             RuntimeSelector(
                 selected: selectedScope,

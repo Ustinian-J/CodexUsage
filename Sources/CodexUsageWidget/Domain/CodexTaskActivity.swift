@@ -151,17 +151,20 @@ struct CodexTaskActivitySnapshot: Equatable {
     let runningTasks: [CodexRunningTask]
     let recentCompletions: [CodexTaskCompletion]
     let remoteHosts: [String]
+    let remoteMonitoringEnabled: Bool
 
     init(
         availability: CodexTaskMonitorAvailability,
         runningTasks: [CodexRunningTask],
         recentCompletions: [CodexTaskCompletion],
-        remoteHosts: [String] = []
+        remoteHosts: [String] = [],
+        remoteMonitoringEnabled: Bool = false
     ) {
         self.availability = availability
         self.runningTasks = runningTasks
         self.recentCompletions = recentCompletions
         self.remoteHosts = remoteHosts
+        self.remoteMonitoringEnabled = remoteMonitoringEnabled
     }
 
     static let starting = CodexTaskActivitySnapshot(
@@ -327,7 +330,8 @@ struct CodexTaskActivityReducer {
 
     func snapshot(
         availability: CodexTaskMonitorAvailability,
-        remoteHosts: [String] = []
+        remoteHosts: [String] = [],
+        remoteMonitoringEnabled: Bool = false
     ) -> CodexTaskActivitySnapshot {
         CodexTaskActivitySnapshot(
             availability: availability,
@@ -336,7 +340,8 @@ struct CodexTaskActivityReducer {
                 return lhs.id < rhs.id
             },
             recentCompletions: completions,
-            remoteHosts: remoteHosts
+            remoteHosts: remoteHosts,
+            remoteMonitoringEnabled: remoteMonitoringEnabled
         )
     }
 

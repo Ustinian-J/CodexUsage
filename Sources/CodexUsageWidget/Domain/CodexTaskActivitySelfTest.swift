@@ -404,20 +404,26 @@ enum CodexTaskActivitySelfTest {
         )
         expect(CodexRemoteHost.validated("-oProxyCommand=bad") == nil, "SSH option injection must be rejected")
         expect(CodexRemoteHost.validated("host;touch") == nil, "remote shell metacharacters must be rejected")
-        var attemptBudget = RemoteConnectionAttemptBudget()
+        var connectionBackoff = RemoteConnectionBackoff()
         expect(
-            attemptBudget.beginAttempt() == 1
-                && attemptBudget.beginAttempt() == 2
-                && attemptBudget.beginAttempt() == 3
-                && attemptBudget.beginAttempt() == nil
-                && !attemptBudget.canRetry,
-            "one manual remote-monitor cycle must allow exactly three connection attempts"
+            connectionBackoff.connectionStage == 1
+                && connectionBackoff.recordFailure(readyDuration: nil) == 10
+                && connectionBackoff.connectionStage == 2
+                && connectionBackoff.recordFailure(readyDuration: nil) == 30
+                && connectionBackoff.recordFailure(readyDuration: nil) == 60
+                && connectionBackoff.recordFailure(readyDuration: nil) == 120
+                && connectionBackoff.recordFailure(readyDuration: nil) == 300
+                && connectionBackoff.recordFailure(readyDuration: nil) == 300
+                && connectionBackoff.connectionStage == 5,
+            "remote reconnects must back off from 10 seconds to a five-minute cap"
         )
-        attemptBudget.reset()
         expect(
-            attemptBudget.beginAttempt() == 1 && attemptBudget.canRetry,
-            "a later manual refresh must reset the three-attempt budget"
+            connectionBackoff.recordFailure(readyDuration: 60) == 10
+                && connectionBackoff.connectionStage == 2,
+            "a stable remote connection must reset the reconnect backoff"
         )
+        connectionBackoff.reset()
+        expect(connectionBackoff.connectionStage == 1, "manual reconnect must reset remote backoff")
         let remoteScript = RemoteCodexTaskMonitor.remoteScript
         expect(
             remoteScript.contains("if not isinstance(root, dict):")

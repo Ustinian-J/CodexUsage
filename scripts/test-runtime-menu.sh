@@ -23,6 +23,12 @@ require_pattern 'RuntimeResetTimes\(' "$source_file" "reset-time model is not us
 require_pattern 'ForEach\(Array\(resetTimes\.rows\.enumerated\(\)\)' "$source_file" "both ordered reset rows are not rendered"
 require_pattern 'runtimeStatusPopoverHeight\(for _: Int\).*570|return 570' "$main_file" "popover height is not 570 pt"
 require_pattern 'TaskActivityCard\(' "$source_file" "task activity card is missing"
+require_pattern 'activitySummary' 'Sources/CodexUsageWidget/UI/TaskActivityViews.swift' "task activity summary is missing"
+
+if grep -Eq -- 'completionRow|ForEach\(items\)|recentCompletions\.prefix' Sources/CodexUsageWidget/UI/TaskActivityViews.swift; then
+    echo "runtime menu source test failed: task list must not appear in the small menu" >&2
+    exit 1
+fi
 
 if grep -Eq -- 'AppUpdateMenuRow\(' "$source_file"; then
     echo "runtime menu source test failed: popover must not render AppUpdateMenuRow" >&2
