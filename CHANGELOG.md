@@ -10,7 +10,7 @@
 - Hardened local and SSH task monitoring with remote-clock replay watermarks, bounded streaming parsers, baseline-only stale-start filtering, fixed Windows OpenSSH resolution, and recoverable malformed-record handling.
 - Decoupled Windows daily task progress from the 50-item notification list so full same-day baseline history is counted without generating old alerts.
 - Removed unreachable update/menu components, obsolete JSON serialization helpers, and the legacy CodexUsage icon; macOS resources now use an explicit packaging allowlist.
-- Renamed the GitHub repository identity and update endpoint from `Ustinian-J/CodexUsage` to `Ustinian-J/CodexS` while preserving bundle IDs, settings keys, cache paths, and legacy asset matching for upgrades.
+- Completed the CodexS product and release-asset rename while preserving the existing `Ustinian-J/CodexUsage` repository address, bundle IDs, settings keys, cache paths, and legacy asset matching for upgrades.
 
 ## 0.4.0 - 2026-08-10
 

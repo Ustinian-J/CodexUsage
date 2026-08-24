@@ -119,9 +119,9 @@ At the time of the initial import, automatic update checks defaulted to off and 
 
 The local extension also adds opt-in macOS quota notifications. They are disabled by default, request permission only after being enabled, and persist only a window kind, reset timestamp, and emitted threshold numbers. Notification content excludes account, conversation, prompt, path, and credential data.
 
-## 2026-08-12 repository rename and boundary-hardening addendum
+## 2026-08-12 product-identity and boundary-hardening addendum
 
-The existing repository was renamed from `Ustinian-J/CodexUsage` to `Ustinian-J/CodexS`; it was not replaced with a new repository. The fixed update endpoint now targets `https://api.github.com/repos/Ustinian-J/CodexS/releases`. Legacy bundle identifiers, local settings keys, cache paths, notification identifiers, and release-asset name matching remain unchanged for upgrade compatibility.
+The user-facing product, executable, and release assets were renamed to CodexS while the existing repository remains `Ustinian-J/CodexUsage`. The fixed update endpoint continues to target `https://api.github.com/repos/Ustinian-J/CodexUsage/releases`. Legacy bundle identifiers, local settings keys, cache paths, notification identifiers, and release-asset name matching remain unchanged for upgrade compatibility.
 
 Additional local hardening limits background reads to runtimes that remain visible, restricts Skill static-file inspection to approved roots and regular files no larger than 1 MiB, moves opt-in debug logging out of the shared `/tmp` namespace into a symlink-safe per-user temporary directory, removes unreachable interface and serialization code, and replaces wildcard resource packaging with an explicit image allowlist. These changes are covered by targeted self-tests plus the existing source, CI, product-identity, parser, and packaging gates.
 
