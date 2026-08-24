@@ -99,10 +99,12 @@ grep -Fq '"-F", sshConfigPath' Sources/CodexUsageWidget/Services/RemoteCodexTask
   || fail "remote SSH must use the isolated config for ProxyJump children"
 grep -Fq 'Include ~/.ssh/config' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "isolated SSH config no longer imports validated user aliases"
+grep -Fq 'Include /etc/ssh/ssh_config' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "isolated SSH config no longer imports system aliases"
 grep -Fq 'queue.sync {' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH shutdown must finish synchronously"
 ssh_config_block="$(sed -n '/let contents = """/,/^[[:space:]]*"""/p' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift)"
-include_line="$(printf '%s\n' "$ssh_config_block" | grep -nF 'Include ~/.ssh/config' | head -1 | cut -d: -f1)"
+include_line="$(printf '%s\n' "$ssh_config_block" | grep -nF 'Include ' | head -1 | cut -d: -f1)"
 [[ -n "$include_line" ]] || fail "isolated SSH config is missing the user config include"
 for option in 'ControlMaster no' 'ControlPersist no' 'ControlPath none'; do
   option_line="$(printf '%s\n' "$ssh_config_block" | grep -nF "$option" | head -1 | cut -d: -f1)"
@@ -110,9 +112,14 @@ for option in 'ControlMaster no' 'ControlPersist no' 'ControlPath none'; do
     || fail "isolated SSH option must precede the user config include: $option"
 done
 stop_block="$(sed -n '/^[[:space:]]*func stop() {/,/^[[:space:]]*private func launch()/p' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift)"
-for invariant in 'queue.sync {' 'restartWorkItem?.cancel()' 'terminationHandler = nil' 'waitUntilExit()'; do
+for invariant in 'queue.sync {' 'restartWorkItem?.cancel()' 'terminateSSHChild()'; do
   printf '%s\n' "$stop_block" | grep -Fq "$invariant" \
     || fail "remote SSH synchronous stop invariant changed: $invariant"
+done
+terminate_block="$(sed -n '/^[[:space:]]*private func terminateSSHChild()/,/^[[:space:]]*private func prepareIsolatedSSHConfig()/p' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift)"
+for invariant in 'systemUptime + 0.5' 'usleep(10_000)' 'Darwin.kill(process.processIdentifier, SIGKILL)'; do
+  printf '%s\n' "$terminate_block" | grep -Fq "$invariant" \
+    || fail "remote SSH bounded termination invariant changed: $invariant"
 done
 grep -Fq 'remoteMonitorIDs[key] == monitorID' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
   || fail "stale remote monitor callbacks must be rejected by generation"

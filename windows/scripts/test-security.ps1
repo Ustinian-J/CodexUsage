@@ -18,7 +18,7 @@ if ($remote.Contains('FileName = "ssh.exe"')) {
 foreach ($required in @('Environment.SystemDirectory', '"OpenSSH", "ssh.exe"', 'FileName = OpenSshPath',
         'BatchMode=yes', 'StrictHostKeyChecking=yes', 'ServerAliveCountMax=3',
         'ControlMaster=no', 'ControlPersist=no', 'ControlPath=none', 'TimeSpan.FromMinutes(5)',
-        '"-F", sshConfigPath', 'Include ~/.ssh/config',
+        '"-F", sshConfigPath', 'Include ~/.ssh/config', 'SpecialFolder.CommonApplicationData',
         'RemoteHostName.Validate(host)', 'scan_started_at', 'scan_finished_at',
         'handle.read(CHUNK_BYTES)', 'MAX_LINE_BYTES = 1048576', 'ClockRolledBack',
         'RollbackRecoveryWindow', 'isinstance(path, str)', 'except FileNotFoundError:',

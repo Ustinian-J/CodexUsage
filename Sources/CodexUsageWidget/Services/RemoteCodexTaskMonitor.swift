@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum CodexRemoteHost {
@@ -184,10 +185,7 @@ final class RemoteCodexTaskMonitor {
             self.connectionBackoff.reset()
             self.restartWorkItem?.cancel()
             self.restartWorkItem = nil
-            self.process?.terminationHandler = nil
-            self.process?.terminate()
-            if self.process?.isRunning == true { self.process?.waitUntilExit() }
-            self.process = nil
+            self.terminateSSHChild()
             self.launch()
         }
     }
@@ -199,10 +197,7 @@ final class RemoteCodexTaskMonitor {
             self.connectionGeneration += 1
             self.restartWorkItem?.cancel()
             self.restartWorkItem = nil
-            self.process?.terminationHandler = nil
-            self.process?.terminate()
-            if self.process?.isRunning == true { self.process?.waitUntilExit() }
-            self.process = nil
+            self.terminateSSHChild()
             self.lineBuffer.reset()
             self.replayWindow = nil
             if let isolatedSSHConfigURL = self.isolatedSSHConfigURL {
@@ -394,6 +389,22 @@ final class RemoteCodexTaskMonitor {
         delay >= 60 ? "\(Int(delay / 60)) 分钟" : "\(Int(delay)) 秒"
     }
 
+    private func terminateSSHChild() {
+        guard let process else { return }
+        process.terminationHandler = nil
+        if process.isRunning {
+            process.terminate()
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+            while process.isRunning, ProcessInfo.processInfo.systemUptime < deadline {
+                usleep(10_000)
+            }
+            if process.isRunning {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        self.process = nil
+    }
+
     private func prepareIsolatedSSHConfig() -> URL? {
         if let isolatedSSHConfigURL { return isolatedSSHConfigURL }
         let directory = FileManager.default.temporaryDirectory
@@ -405,6 +416,7 @@ final class RemoteCodexTaskMonitor {
             ControlPersist no
             ControlPath none
         Include ~/.ssh/config
+        Include /etc/ssh/ssh_config
         """
         do {
             try FileManager.default.createDirectory(

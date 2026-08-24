@@ -319,12 +319,16 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
         var directory = Path.Combine(Path.GetTempPath(), "CodexS-ssh");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, $"{Guid.NewGuid():N}.conf");
-        File.WriteAllText(path, """
+        var systemConfig = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "ssh", "ssh_config").Replace('\\', '/');
+        File.WriteAllText(path, $"""
             Host *
                 ControlMaster no
                 ControlPersist no
                 ControlPath none
             Include ~/.ssh/config
+            Include "{systemConfig}"
             """);
         isolatedSshConfigPath = path;
         return path;

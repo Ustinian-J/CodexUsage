@@ -48,8 +48,8 @@ if grep -R --exclude='test-security.ps1' -nE '<PackageReference|auth\.json|HttpC
   exit 1
 fi
 WINDOWS_REMOTE_MONITOR='windows/src/CodexS.Windows/RemoteCodexTaskMonitor.cs'
-WINDOWS_REMOTE_CONFIG_BLOCK="$(sed -n '/File.WriteAllText(path, """/,/^[[:space:]]*""");/p' "$WINDOWS_REMOTE_MONITOR")"
-include_line="$(printf '%s\n' "$WINDOWS_REMOTE_CONFIG_BLOCK" | grep -nF 'Include ~/.ssh/config' | head -1 | cut -d: -f1)"
+WINDOWS_REMOTE_CONFIG_BLOCK="$(sed -n '/File.WriteAllText(path,/,/^[[:space:]]*""");/p' "$WINDOWS_REMOTE_MONITOR")"
+include_line="$(printf '%s\n' "$WINDOWS_REMOTE_CONFIG_BLOCK" | grep -nF 'Include ' | head -1 | cut -d: -f1)"
 [[ -n "$include_line" ]] || { echo "Windows isolated SSH config is missing Include" >&2; exit 1; }
 for option in 'ControlMaster no' 'ControlPersist no' 'ControlPath none'; do
   option_line="$(printf '%s\n' "$WINDOWS_REMOTE_CONFIG_BLOCK" | grep -nF "$option" | head -1 | cut -d: -f1)"
@@ -82,6 +82,7 @@ for invariant in \
   'ControlPath=none' \
   '"-F", sshConfigPath' \
   'Include ~/.ssh/config' \
+  'SpecialFolder.CommonApplicationData' \
   'TimeSpan.FromMinutes(5)' \
   'scan_started_at' \
   'scan_finished_at' \
