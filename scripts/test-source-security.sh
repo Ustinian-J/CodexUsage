@@ -72,7 +72,7 @@ done <<< "$ssh_files"
 
 process_matches="$(grep -nF 'Process()' "${source_code_files[@]}" || true)"
 process_count="$(printf '%s\n' "$process_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
-[[ "$process_count" == "6" ]] || fail "Process launch surface changed: expected 6 reviewed sites, found $process_count"
+[[ "$process_count" == "8" ]] || fail "Process launch surface changed: expected 8 reviewed sites, found $process_count"
 
 grep -Fq 'process.arguments = ["app-server"]' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed Codex app-server launch changed"
@@ -97,6 +97,20 @@ for option in 'BatchMode=yes' 'StrictHostKeyChecking=yes' 'ServerAliveCountMax=3
 done
 grep -Fq '"-F", sshConfigPath' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH must use the isolated config for ProxyJump children"
+grep -Fq 'process.arguments = ["-G", host]' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse must resolve the configured alias without opening a connection"
+grep -Fq 'status.st_uid == geteuid()' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse must require a socket owned by the current user"
+grep -Fq 'Darwin.symlink(source, link)' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse must use an isolated link instead of the user control path directly"
+grep -Fq 'Darwin.mkdir($0, S_IRWXU)' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse must protect its short temporary directory with mode 0700"
+grep -Fq 'linkURL.path.utf8.count <= 100' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse must stay below the Unix socket path limit"
+grep -Fq '"-O", "check"' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse must verify that the existing master is live"
+grep -Fq '"ControlMaster=auto"' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse must opt in only for a verified existing master"
 grep -Fq 'Include ~/.ssh/config' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "isolated SSH config no longer imports validated user aliases"
 grep -Fq 'Include /etc/ssh/ssh_config' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
@@ -106,11 +120,20 @@ grep -Fq 'queue.sync {' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor
 ssh_config_block="$(sed -n '/let contents = """/,/^[[:space:]]*"""/p' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift)"
 include_line="$(printf '%s\n' "$ssh_config_block" | grep -nF 'Include ' | head -1 | cut -d: -f1)"
 [[ -n "$include_line" ]] || fail "isolated SSH config is missing the user config include"
-for option in 'ControlMaster no' 'ControlPersist no' 'ControlPath none'; do
+for option in 'BatchMode yes' 'StrictHostKeyChecking yes' 'ConnectTimeout 8' \
+  'ControlMaster no' 'ControlPersist no' 'ControlPath none'; do
   option_line="$(printf '%s\n' "$ssh_config_block" | grep -nF "$option" | head -1 | cut -d: -f1)"
   [[ -n "$option_line" && "$option_line" -lt "$include_line" ]] \
     || fail "isolated SSH option must precede the user config include: $option"
 done
+grep -Fq 'probeQueue.async {' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse probes must not block the monitor lifecycle queue"
+grep -Fq 'self.authorizationGeneration == authorization' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse completion must reject stale authorization generations"
+grep -Fq 'self.connectionGeneration == connection' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH control reuse completion must reject stale connection generations"
+grep -Fq 'static let remoteCommand = "/usr/bin/env CODEXS_REMOTE_SCRIPT="' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "remote command must use env for POSIX and C-family login shell compatibility"
 stop_block="$(sed -n '/^[[:space:]]*func stop() {/,/^[[:space:]]*private func launch()/p' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift)"
 for invariant in 'queue.sync {' 'restartWorkItem?.cancel()' 'terminateSSHChild()'; do
   printf '%s\n' "$stop_block" | grep -Fq "$invariant" \

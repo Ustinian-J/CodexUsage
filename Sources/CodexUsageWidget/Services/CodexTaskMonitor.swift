@@ -515,7 +515,7 @@ private enum CodexTaskReadError: Error {
     case unavailable
 }
 
-private final class CodexBoundedPipeCollector: @unchecked Sendable {
+final class CodexBoundedPipeCollector: @unchecked Sendable {
     private let maximumBytes: Int
     private let lock = NSLock()
     private let finished = DispatchSemaphore(value: 0)

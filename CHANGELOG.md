@@ -6,6 +6,8 @@
 
 - Restored automatic local-and-remote task monitoring behind an explicit persistent switch on macOS and Windows.
 - Replaced repeated fixed-interval SSH retries with one long-lived connection per host and capped 10-second-to-5-minute reconnect backoff; disabling monitoring cancels CodexS-owned connections and retries.
+- On macOS, reused a verified same-user OpenSSH control socket through an isolated temporary link so an active Codex/VS Code SSH session can supply remote task events without another jump-host MFA request; the fallback connection remains non-persistent.
+- Fixed the remote Python stream's Swift escaping and login-shell quoting so a successful SSH connection now reaches `scan_started`/`ready` and remains live.
 - Kept known running tasks red even while another source is reconnecting, instead of hiding activity behind an unavailable badge.
 - Simplified the macOS menu popover to traffic-light state and running/unread counts without task titles, projects, timestamps, or result rows; the full task board remains in the main window.
 

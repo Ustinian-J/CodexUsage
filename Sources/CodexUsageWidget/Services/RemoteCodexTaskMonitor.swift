@@ -148,9 +148,20 @@ struct RemoteCodexReplayWindow {
 }
 
 final class RemoteCodexTaskMonitor {
+    private struct ReusableSSHControl {
+        let linkURL: URL
+        let directoryURL: URL
+
+        func remove() {
+            try? FileManager.default.removeItem(at: linkURL)
+            try? FileManager.default.removeItem(at: directoryURL)
+        }
+    }
+
     private let host: String
     private let onUpdate: (RemoteCodexTaskMonitorUpdate) -> Void
     private let queue: DispatchQueue
+    private let probeQueue: DispatchQueue
     private var process: Process?
     private var restartWorkItem: DispatchWorkItem?
     private var lineBuffer = CodexJSONLineBuffer()
@@ -163,6 +174,7 @@ final class RemoteCodexTaskMonitor {
     private var connectionGeneration = 0
     private var connectionBackoff = RemoteConnectionBackoff()
     private var isolatedSSHConfigURL: URL?
+    private var reusableSSHControl: ReusableSSHControl?
 
     init(
         host: String,
@@ -173,6 +185,7 @@ final class RemoteCodexTaskMonitor {
         self.recoveryCheckpoint = recoveryCheckpoint
         self.onUpdate = onUpdate
         self.queue = DispatchQueue(label: "CodexS.remote-task-monitor.\(host)", qos: .utility)
+        self.probeQueue = DispatchQueue(label: "CodexS.remote-task-probe.\(host)", qos: .utility)
     }
 
     func authorize() {
@@ -200,6 +213,7 @@ final class RemoteCodexTaskMonitor {
             self.terminateSSHChild()
             self.lineBuffer.reset()
             self.replayWindow = nil
+            self.removeReusableSSHControlLink()
             if let isolatedSSHConfigURL = self.isolatedSSHConfigURL {
                 try? FileManager.default.removeItem(at: isolatedSSHConfigURL)
                 self.isolatedSSHConfigURL = nil
@@ -227,11 +241,46 @@ final class RemoteCodexTaskMonitor {
         let authorization = authorizationGeneration
         let connection = connectionGeneration
 
+        removeReusableSSHControlLink()
+        let host = host
+        probeQueue.async { [weak self] in
+            let reusableControl = Self.prepareReusableSSHControl(host: host)
+            guard let self else {
+                reusableControl?.remove()
+                return
+            }
+            self.queue.async { [weak self] in
+                guard let self,
+                      !self.stopped,
+                      self.authorizationGeneration == authorization,
+                      self.connectionGeneration == connection,
+                      self.process == nil
+                else {
+                    reusableControl?.remove()
+                    return
+                }
+                self.reusableSSHControl = reusableControl
+                self.launchSSH(
+                    sshConfigPath: sshConfigPath,
+                    reusableControlPath: reusableControl?.linkURL.path,
+                    authorization: authorization,
+                    connection: connection
+                )
+            }
+        }
+    }
+
+    private func launchSSH(
+        sshConfigPath: String,
+        reusableControlPath: String?,
+        authorization: Int,
+        connection: Int
+    ) {
         let stdout = Pipe()
         let stderr = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = [
+        var arguments = [
             "-F", sshConfigPath,
             "-T",
             "-o", "BatchMode=yes",
@@ -239,12 +288,25 @@ final class RemoteCodexTaskMonitor {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=yes",
-            "-o", "ControlMaster=no",
-            "-o", "ControlPersist=no",
-            "-o", "ControlPath=none",
+        ]
+        if let controlPath = reusableControlPath {
+            arguments += [
+                "-o", "ControlMaster=auto",
+                "-o", "ControlPersist=no",
+                "-o", "ControlPath=\(controlPath)",
+            ]
+        } else {
+            arguments += [
+                "-o", "ControlMaster=no",
+                "-o", "ControlPersist=no",
+                "-o", "ControlPath=none",
+            ]
+        }
+        arguments += [
             host,
             Self.remoteCommand
         ]
+        process.arguments = arguments
         process.standardOutput = stdout
         process.standardError = stderr
 
@@ -271,6 +333,10 @@ final class RemoteCodexTaskMonitor {
                 stdout.fileHandleForReading.readabilityHandler = nil
                 stderr.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
+                self.removeReusableSSHControlLink()
+                debugLog(
+                    "remote SSH process exited status=\(finished.terminationStatus) ready=\(self.streamReady)"
+                )
                 guard !self.stopped else { return }
                 self.handleConnectionFailure()
             }
@@ -282,6 +348,7 @@ final class RemoteCodexTaskMonitor {
         } catch {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
+            removeReusableSSHControlLink()
             handleConnectionFailure()
         }
     }
@@ -290,6 +357,9 @@ final class RemoteCodexTaskMonitor {
         for line in lineBuffer.append(data) {
             guard let envelope = try? JSONDecoder().decode(RemoteCodexTaskEnvelope.self, from: line) else {
                 continue
+            }
+            if envelope.kind != "event" {
+                debugLog("remote SSH protocol event: \(envelope.kind)")
             }
             switch envelope.kind {
             case "scan_started":
@@ -405,6 +475,165 @@ final class RemoteCodexTaskMonitor {
         self.process = nil
     }
 
+    static func controlPath(from configuration: Data) -> String? {
+        guard configuration.count <= 1_024 * 1_024,
+              let text = String(data: configuration, encoding: .utf8)
+        else { return nil }
+        for line in text.split(whereSeparator: { $0.isNewline }) {
+            let fields = line.split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+            guard fields.count == 2,
+                  fields[0].lowercased() == "controlpath"
+            else { continue }
+            let path = String(fields[1]).trimmingCharacters(in: .whitespaces)
+            guard path.hasPrefix("/"),
+                  path != "/",
+                  path.utf8.count <= 1_024,
+                  !path.utf8.contains(0)
+            else { return nil }
+            return path
+        }
+        return nil
+    }
+
+    private static func prepareReusableSSHControl(host: String) -> ReusableSSHControl? {
+        guard let sourcePath = activeSSHControlPath(host: host) else { return nil }
+        let directoryURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("CodexS-mux-\(UUID().uuidString)", isDirectory: true)
+        let directoryResult = directoryURL.path.withCString {
+            Darwin.mkdir($0, S_IRWXU)
+        }
+        guard directoryResult == 0 else {
+            debugLog("remote SSH control reuse: isolated directory failed")
+            return nil
+        }
+        let linkURL = directoryURL.appendingPathComponent("control.sock")
+        let reusableControl = ReusableSSHControl(linkURL: linkURL, directoryURL: directoryURL)
+        guard linkURL.path.utf8.count <= 100 else {
+            reusableControl.remove()
+            debugLog("remote SSH control reuse: isolated path too long")
+            return nil
+        }
+        let result = sourcePath.withCString { source in
+            linkURL.path.withCString { link in
+                Darwin.symlink(source, link)
+            }
+        }
+        guard result == 0 else {
+            reusableControl.remove()
+            debugLog("remote SSH control reuse: isolated link failed")
+            return nil
+        }
+        guard controlMasterIsRunning(path: linkURL.path, host: host) else {
+            reusableControl.remove()
+            debugLog("remote SSH control reuse: isolated link verification failed")
+            return nil
+        }
+        debugLog("remote SSH control reuse: isolated link ready")
+        return reusableControl
+    }
+
+    private func removeReusableSSHControlLink() {
+        reusableSSHControl?.remove()
+        reusableSSHControl = nil
+    }
+
+    private static func activeSSHControlPath(host: String) -> String? {
+        guard let configuration = resolvedSSHConfiguration(host: host) else {
+            debugLog("remote SSH control reuse: config query failed")
+            return nil
+        }
+        guard let path = controlPath(from: configuration) else {
+            debugLog("remote SSH control reuse: control path unavailable")
+            return nil
+        }
+        guard isOwnedSocket(path) else {
+            debugLog("remote SSH control reuse: owned socket unavailable")
+            return nil
+        }
+        guard controlMasterIsRunning(path: path, host: host) else {
+            debugLog("remote SSH control reuse: master unavailable")
+            return nil
+        }
+        debugLog("remote SSH control reuse: verified existing master")
+        return path
+    }
+
+    private static func resolvedSSHConfiguration(host: String) -> Data? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = ["-G", host]
+        process.standardInput = FileHandle.nullDevice
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        let outputCollector = CodexBoundedPipeCollector(maximumBytes: 1_024 * 1_024)
+        let errorCollector = CodexBoundedPipeCollector(maximumBytes: 64 * 1_024)
+        outputCollector.start(output.fileHandleForReading)
+        errorCollector.start(error.fileHandleForReading)
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do {
+            try process.run()
+        } catch {
+            outputCollector.cancel()
+            errorCollector.cancel()
+            return nil
+        }
+        if exited.wait(timeout: .now() + 3) == .timedOut {
+            process.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 1)
+            }
+            outputCollector.cancel()
+            errorCollector.cancel()
+            return nil
+        }
+        guard process.terminationStatus == 0,
+              let data = outputCollector.result(timeout: .seconds(1)),
+              errorCollector.result(timeout: .seconds(1)) != nil
+        else { return nil }
+        return data
+    }
+
+    private static func isOwnedSocket(_ path: String) -> Bool {
+        var status = stat()
+        guard lstat(path, &status) == 0 else { return false }
+        return status.st_mode & mode_t(S_IFMT) == mode_t(S_IFSOCK)
+            && status.st_uid == geteuid()
+    }
+
+    private static func controlMasterIsRunning(path: String, host: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = [
+            "-S", path,
+            "-O", "check",
+            "-o", "BatchMode=yes",
+            host,
+        ]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        if exited.wait(timeout: .now() + 2) == .timedOut {
+            process.terminate()
+            if exited.wait(timeout: .now() + 1) == .timedOut {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 1)
+            }
+            return false
+        }
+        return process.terminationStatus == 0
+    }
+
     private func prepareIsolatedSSHConfig() -> URL? {
         if let isolatedSSHConfigURL { return isolatedSSHConfigURL }
         let directory = FileManager.default.temporaryDirectory
@@ -412,6 +641,9 @@ final class RemoteCodexTaskMonitor {
         let url = directory.appendingPathComponent(UUID().uuidString + ".conf")
         let contents = """
         Host *
+            BatchMode yes
+            StrictHostKeyChecking yes
+            ConnectTimeout 8
             ControlMaster no
             ControlPersist no
             ControlPath none
@@ -438,11 +670,10 @@ final class RemoteCodexTaskMonitor {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private static let remoteCommand = "$SHELL -lc " + shellQuote(
-        "python3 -u -c " + shellQuote(remoteScript)
-    )
+    static let remoteCommand = "/usr/bin/env CODEXS_REMOTE_SCRIPT=" + shellQuote(remoteScript)
+        + " $SHELL -lc " + shellQuote("python3 -u -c \"$CODEXS_REMOTE_SCRIPT\"")
 
-    static let remoteScript = #"""
+    static let remoteScript = """
 import datetime
 import glob
 import json
@@ -470,7 +701,7 @@ def valid_id(value):
 def project_name(path):
     if not isinstance(path, str):
         return None
-    value = path.replace("\\", "/").rstrip("/")
+    value = path.replace("\\\\", "/").rstrip("/")
     return value.rsplit("/", 1)[-1] if value else None
 
 def event_time(payload, root, key):
@@ -652,7 +883,7 @@ def read_file(path, metadata, cursors):
                 if not part:
                     break
                 cursor["offset"] += len(part)
-                completed = part.endswith(b"\n")
+                completed = part.endswith(b"\\n")
                 if cursor["discarding"]:
                     if completed:
                         cursor["discarding"] = False
@@ -708,5 +939,5 @@ except KeyboardInterrupt:
 except Exception:
     emit({"kind": "error"})
     sys.exit(2)
-"""#
+"""
 }

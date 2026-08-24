@@ -9,7 +9,7 @@ CodexS is distributed as macOS DMGs and a self-contained Windows EXE.
 - Intel with the `x86_64` DMG.
 - A local Codex installation and signed-in account are required for live quota data.
 - Windows 10 version 1809 or later / Windows 11 x64 with the `windows-x64.exe`; native Windows sessions and optional Linux/macOS SSH task sources are supported.
-- Remote task monitoring requires a working system OpenSSH client, a configured non-interactive host alias, strict known-host verification, and Python 3 on the remote host.
+- Remote task monitoring requires a working system OpenSSH client, a configured host alias, strict known-host verification, and Python 3 on the remote host. Authentication must be non-interactive, or on macOS an already-live same-user OpenSSH control connection must be available for MFA-backed jump chains.
 
 ## Local Test Build
 

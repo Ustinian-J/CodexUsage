@@ -404,6 +404,20 @@ enum CodexTaskActivitySelfTest {
         )
         expect(CodexRemoteHost.validated("-oProxyCommand=bad") == nil, "SSH option injection must be rejected")
         expect(CodexRemoteHost.validated("host;touch") == nil, "remote shell metacharacters must be rejected")
+        expect(
+            RemoteCodexTaskMonitor.controlPath(
+                from: Data("hostname server\ncontrolpath /tmp/codex-master.sock\n".utf8)
+            ) == "/tmp/codex-master.sock",
+            "remote monitoring must parse an expanded absolute SSH control path"
+        )
+        expect(
+            RemoteCodexTaskMonitor.controlPath(from: Data("controlpath relative.sock\n".utf8)) == nil,
+            "remote monitoring must reject relative SSH control paths"
+        )
+        expect(
+            RemoteCodexTaskMonitor.controlPath(from: Data("controlpath none\n".utf8)) == nil,
+            "remote monitoring must reject a disabled SSH control path"
+        )
         var connectionBackoff = RemoteConnectionBackoff()
         expect(
             connectionBackoff.connectionStage == 1
@@ -425,6 +439,19 @@ enum CodexTaskActivitySelfTest {
         connectionBackoff.reset()
         expect(connectionBackoff.connectionStage == 1, "manual reconnect must reset remote backoff")
         let remoteScript = RemoteCodexTaskMonitor.remoteScript
+        expect(
+            remoteScript.contains("separators=(\",\", \":\")")
+                && remoteScript.contains("path.replace(\"\\\\\", \"/\")")
+                && remoteScript.contains("part.endswith(b\"\\n\")"),
+            "remote Python source must preserve valid quote, path, and newline escapes"
+        )
+        expect(
+            RemoteCodexTaskMonitor.remoteCommand.hasPrefix("/usr/bin/env CODEXS_REMOTE_SCRIPT=")
+                && RemoteCodexTaskMonitor.remoteCommand.hasSuffix(
+                    "'python3 -u -c \"$CODEXS_REMOTE_SCRIPT\"'"
+                ),
+            "remote Python must cross POSIX and C-family login shells through env"
+        )
         expect(
             remoteScript.contains("if not isinstance(root, dict):")
                 && remoteScript.contains("if not isinstance(payload, dict):"),

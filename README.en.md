@@ -9,7 +9,7 @@ CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. I
 - Live 5-hour and 7-day quota rings with the remaining percentage in each ring.
 - A single menu-bar state badge: red/play means running, green/check means idle, and gray/dash means unavailable. Unread completion is an independent blinking amber diamond, so running and unread remain visible together. The popover retains labeled red/yellow/green lights.
 - Incremental local Codex task monitoring, optional native completion/interruption notifications, and a “Mark all read” action that clears yellow attention.
-- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config` and enable automatic remote monitoring. CodexS keeps one system OpenSSH connection per host; after a disconnect it backs off through 10 seconds, 30 seconds, 1 minute, 2 minutes, and a 5-minute cap. Turning the switch off immediately stops CodexS-owned connections and future retries.
+- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config` and enable automatic remote monitoring. On macOS, CodexS first reuses a live OpenSSH control connection through a user-only temporary link, avoiding another jump-host MFA challenge; it opens an isolated, non-persistent connection only when no reusable connection exists. Reconnects back off through 10 seconds, 30 seconds, 1 minute, 2 minutes, and a 5-minute cap. Turning the switch off stops CodexS-owned channels and retries without closing a reused connection.
 - Reset countdowns, used/remaining display modes, and multiple menu bar densities.
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
 - A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.
@@ -84,6 +84,7 @@ Open the DMG and drag `CodexS.app` to `Applications`. If `CodexUsage.app` is alr
 - A local, signed-in Codex installation.
 - Codex must have been used at least once so its local state database exists.
 - Windows monitors native Windows Codex sessions and can also monitor Linux/macOS SSH hosts with Python 3. WSL-only sessions are not detected unless exposed through an SSH host alias.
+- Remote hosts require strict known-host verification and Python 3. A macOS jump chain that requires MFA needs an already-live reusable OpenSSH control connection; batch mode cannot enter the code, so otherwise CodexS remains in its capped reconnect cycle.
 
 ## Build From Source
 
