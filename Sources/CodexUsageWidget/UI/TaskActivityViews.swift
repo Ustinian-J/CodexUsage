@@ -36,6 +36,14 @@ struct TaskActivityCard: View {
                     icon: "hourglass",
                     text: language.text("正在连接 Codex 本机与远程任务记录…", "Connecting to local and remote Codex task records…")
                 )
+            case let .connecting(attempt, maximum):
+                compactMessage(
+                    icon: "network",
+                    text: language.text(
+                        "正在连接远程任务（\(attempt)/\(maximum)）…",
+                        "Connecting to remote tasks (\(attempt)/\(maximum))…"
+                    )
+                )
             case let .unavailable(message):
                 compactMessage(
                     icon: "exclamationmark.triangle",
@@ -154,12 +162,20 @@ struct TaskActivityCard: View {
         switch snapshot.availability {
         case .starting:
             return language.text("正在启动", "Starting")
+        case let .connecting(attempt, maximum):
+            return language.text(
+                "远程连接 \(attempt)/\(maximum)",
+                "Remote connection \(attempt)/\(maximum)"
+            )
         case .unavailable:
             return language.text("监控不可用", "Monitor unavailable")
         case .ready:
             let source = snapshot.remoteHosts.isEmpty
                 ? language.text("本机", "Local")
-                : language.text("本机 + \(snapshot.remoteHosts.count) 远程", "Local + \(snapshot.remoteHosts.count) remote")
+                : language.text(
+                    "本机 + \(snapshot.remoteHosts.count) 远程配置",
+                    "Local + \(snapshot.remoteHosts.count) remote configured"
+                )
             return language.text(
                 "\(source) · \(snapshot.runningCount) 个执行中 · \(snapshot.unreadCount) 条新完成",
                 "\(source) · \(snapshot.runningCount) running · \(snapshot.unreadCount) new"

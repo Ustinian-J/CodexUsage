@@ -272,6 +272,11 @@ struct StatusItemPresentationBuilder {
         switch activity.availability {
         case .starting:
             return language.text("任务监控正在启动", "Task monitoring is starting")
+        case let .connecting(attempt, maximum):
+            return language.text(
+                "远程任务正在连接（\(attempt)/\(maximum)）",
+                "Remote task monitor is connecting (\(attempt)/\(maximum))"
+            )
         case .unavailable:
             return language.text("任务监控暂不可用", "Task monitoring is unavailable")
         case .ready:

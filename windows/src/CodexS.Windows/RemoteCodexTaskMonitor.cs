@@ -48,6 +48,14 @@ internal static class RemoteReplayPolicy
         && taskEvent.OccurredAt < scanStart.AddHours(-12);
 }
 
+internal static class RemoteConnectionRetryPolicy
+{
+    internal const int MaximumAttempts = 3;
+
+    internal static bool CanAttempt(int completedAttempts) =>
+        completedAttempts >= 0 && completedAttempts < MaximumAttempts;
+}
+
 internal sealed class RemoteHostStore
 {
     private sealed class Settings
@@ -116,6 +124,7 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
     private DateTimeOffset? recoveryCheckpoint;
     private Task? worker;
     private Process? process;
+    private int completedAttempts;
 
     internal event Action<TaskEvent, TaskEventOrigin>? EventArrived;
     internal event Action? ReplayStarted;
@@ -130,17 +139,57 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
 
     internal void Start() => worker ??= Task.Run(RunAsync);
 
+    internal void ResetAttemptBudget() => Interlocked.Exchange(ref completedAttempts, 0);
+
     private async Task RunAsync()
     {
         while (!cancellation.IsCancellationRequested)
         {
+            if (!TryBeginConnectionAttempt(out var attempt))
+            {
+                ReportAttemptsExhausted();
+                break;
+            }
+            Unavailable?.Invoke(
+                $"正在连接远程任务主机 {host}（{attempt}/{RemoteConnectionRetryPolicy.MaximumAttempts}）");
             try { await RunConnectionAsync(cancellation.Token); }
             catch (OperationCanceledException) { break; }
-            catch { Unavailable?.Invoke($"远程任务主机 {host} 暂时不可用"); }
+            catch { }
+            if (cancellation.IsCancellationRequested) break;
+            Unavailable?.Invoke($"远程任务主机 {host} 暂时不可用");
+            if (!RemoteConnectionRetryPolicy.CanAttempt(Volatile.Read(ref completedAttempts)))
+            {
+                ReportAttemptsExhausted();
+                break;
+            }
+            var nextAttempt = Volatile.Read(ref completedAttempts) + 1;
+            Unavailable?.Invoke(
+                $"远程任务主机 {host} 连接失败，10 秒后重试（{nextAttempt}/{RemoteConnectionRetryPolicy.MaximumAttempts}）");
             try { await Task.Delay(TimeSpan.FromSeconds(10), cancellation.Token); }
             catch (OperationCanceledException) { break; }
         }
     }
+
+    private bool TryBeginConnectionAttempt(out int attempt)
+    {
+        while (true)
+        {
+            var completed = Volatile.Read(ref completedAttempts);
+            if (!RemoteConnectionRetryPolicy.CanAttempt(completed))
+            {
+                attempt = 0;
+                return false;
+            }
+            if (Interlocked.CompareExchange(ref completedAttempts, completed + 1, completed) == completed)
+            {
+                attempt = completed + 1;
+                return true;
+            }
+        }
+    }
+
+    private void ReportAttemptsExhausted() => Unavailable?.Invoke(
+        $"远程任务主机 {host} 已尝试 {RemoteConnectionRetryPolicy.MaximumAttempts} 次，监听已停止；点击刷新重试");
 
     private async Task RunConnectionAsync(CancellationToken token)
     {
@@ -159,7 +208,8 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
         foreach (var argument in new[] {
             "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-            "-o", "StrictHostKeyChecking=yes", host, RemoteCommand
+            "-o", "StrictHostKeyChecking=yes", "-o", "ControlMaster=no",
+            "-o", "ControlPath=none", host, RemoteCommand
         }) startInfo.ArgumentList.Add(argument);
 
         using var connection = new Process { StartInfo = startInfo };
@@ -233,8 +283,6 @@ internal sealed class RemoteCodexTaskMonitor : IDisposable
             try { await stderrDrain; } catch (OperationCanceledException) { }
             if (ReferenceEquals(process, connection)) process = null;
         }
-        if (!token.IsCancellationRequested)
-            Unavailable?.Invoke($"远程任务主机 {host} 暂时不可用");
     }
 
     private static async Task DrainAsync(Stream stream, CancellationToken token)

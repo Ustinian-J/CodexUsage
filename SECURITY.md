@@ -32,7 +32,7 @@ CodexS reads:
 
 Task activity persistence uses the legacy-compatible `CodexUsage.taskActivity.v1` local `UserDefaults` key and stores only task IDs, thread titles, project basenames, outcomes, timestamps, read state, and a recovery watermark. It deliberately ignores and never persists or exposes `last_agent_message`. CodexS keeps the existing `com.ustinianj.codexusage` bundle ID and `~/Library/Caches/CodexUsage/` cache namespace so an upgrade does not lose settings or repeat alerts.
 
-Remote monitoring is opt-in and stores only validated SSH config aliases plus per-host recovery timestamps. CodexS launches the platform OpenSSH client with batch authentication, strict host-key checking, connection timeout, and keepalive limits. The host value is passed as a separate validated argument, never interpolated into a local shell. A fixed Python 3 parser runs in memory on the remote host, opens Codex state/session files read-only, emits only allowlisted task metadata, and does not create or modify remote files. OpenSSH may use keys or an agent configured by the user, but CodexS never opens, copies, logs, or persists those credentials.
+Remote monitoring is opt-in and stores only validated SSH config aliases plus per-host recovery timestamps. Saving aliases or starting CodexS does not connect; only a manual Refresh starts a cycle of at most three attempts. CodexS launches the platform OpenSSH client with batch authentication, strict host-key checking, connection timeout, and keepalive limits. Connection sharing is disabled for the target connection; a `ProxyJump` helper still follows the user's SSH configuration for the jump-host alias. The host value is passed as a separate validated argument, never interpolated into a local shell. A fixed Python 3 parser runs in memory on the remote host, opens Codex state/session files read-only, emits only allowlisted task metadata, and does not create or modify remote files. OpenSSH may use keys or an agent configured by the user, but CodexS never opens, copies, logs, or persists those credentials.
 
 It should not upload local usage, transcript, task, thread, account, or path data to a third-party service. Claude Code transcript parsing must not store prompt text, assistant response text, tool arguments, or tool output.
 
@@ -40,7 +40,7 @@ Static Skill inspection is limited to regular `SKILL.md` files under `~/.codex/s
 
 ## Network Scope
 
-CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexS/releases` during automatic checks when enabled or when the user manually checks for updates. When the user explicitly configures SSH hosts, CodexS also opens long-lived encrypted SSH connections to those aliases solely for remote task events.
+CodexS is local-first. The update checker may request public GitHub Release metadata from `https://api.github.com/repos/Ustinian-J/CodexS/releases` during automatic checks when enabled or when the user manually checks for updates. After the user explicitly configures SSH hosts and clicks Refresh, CodexS opens long-lived encrypted SSH connections to those aliases solely for remote task events.
 
 Update requests must not include local usage, transcript, task, thread, account, path, prompt, response, tool argument, or tool output data. The update checker may send standard HTTPS headers such as `User-Agent` and `If-None-Match` for ETag caching.
 

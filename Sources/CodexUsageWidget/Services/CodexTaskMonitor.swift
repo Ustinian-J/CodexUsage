@@ -277,7 +277,7 @@ final class CodexTaskActivityStore: ObservableObject {
         }
         self.localMonitor = monitor
         monitor.start()
-        synchronizeRemoteMonitors()
+        publishAndPersist()
     }
 
     func stop() {
@@ -294,7 +294,30 @@ final class CodexTaskActivityStore: ObservableObject {
         guard normalized != configuredRemoteHosts else { return }
         configuredRemoteHosts = normalized
         guard started else { return }
-        synchronizeRemoteMonitors()
+        removeUnconfiguredRemoteMonitors()
+        publishAndPersist()
+    }
+
+    func refreshRemoteMonitoring() {
+        guard started else { return }
+        removeUnconfiguredRemoteMonitors()
+        for host in configuredRemoteHosts {
+            let key = host.lowercased()
+            if let monitor = remoteMonitors[key] {
+                monitor.authorize()
+                continue
+            }
+            let monitor = RemoteCodexTaskMonitor(
+                host: host,
+                recoveryCheckpoint: remoteCheckpoints[key]
+            ) { [weak self] update in
+                DispatchQueue.main.sync {
+                    self?.handleRemote(update, host: host)
+                }
+            }
+            remoteMonitors[key] = monitor
+            monitor.authorize()
+        }
     }
 
     func markRead(_ identity: String) {
@@ -361,6 +384,10 @@ final class CodexTaskActivityStore: ObservableObject {
             if changed { publishAndPersist() }
             for completion in completions { onNewCompletion?(completion) }
 
+        case let .connecting(attempt, maximum):
+            sourceAvailability[sourceID] = .connecting(attempt, maximum)
+            publishAndPersist()
+
         case let .ready(checkpoint):
             remoteCheckpoints[host.lowercased()] = checkpoint
             remoteCheckpointPersistence.save(remoteCheckpoints)
@@ -373,7 +400,7 @@ final class CodexTaskActivityStore: ObservableObject {
         }
     }
 
-    private func synchronizeRemoteMonitors() {
+    private func removeUnconfiguredRemoteMonitors() {
         let desired = Set(configuredRemoteHosts.map { $0.lowercased() })
         let removedKeys = remoteMonitors.keys.filter { !desired.contains($0) }
         for key in removedKeys {
@@ -381,22 +408,6 @@ final class CodexTaskActivityStore: ObservableObject {
             sourceAvailability.removeValue(forKey: "remote:\(key)")
             _ = reducer.removeRunningTasks(sourceLabel: key)
         }
-        for host in configuredRemoteHosts {
-            let key = host.lowercased()
-            guard remoteMonitors[key] == nil else { continue }
-            sourceAvailability["remote:\(key)"] = .starting
-            let monitor = RemoteCodexTaskMonitor(
-                host: host,
-                recoveryCheckpoint: remoteCheckpoints[key]
-            ) { [weak self] update in
-                DispatchQueue.main.sync {
-                    self?.handleRemote(update, host: host)
-                }
-            }
-            remoteMonitors[key] = monitor
-            monitor.start()
-        }
-        publishAndPersist()
     }
 
     private func normalizedRemoteHosts(_ hosts: [String]) -> [String] {
@@ -407,6 +418,11 @@ final class CodexTaskActivityStore: ObservableObject {
         let orderedKeys = sourceAvailability.keys.sorted()
         for key in orderedKeys {
             if case let .unavailable(message) = sourceAvailability[key] { return .unavailable(message) }
+        }
+        for key in orderedKeys {
+            if case let .connecting(attempt, maximum) = sourceAvailability[key] {
+                return .connecting(attempt, maximum)
+            }
         }
         if sourceAvailability.values.contains(.starting) { return .starting }
         return .ready

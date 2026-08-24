@@ -20,7 +20,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         dashboard.CreateControl();
         dashboard.MarkAllReadRequested += monitor.MarkAllRead;
         dashboard.ResultOpened += id => { monitor.MarkRead(id); dashboard.ShowPanel(); };
-        dashboard.RefreshRequested += () => _ = RefreshQuotaAsync();
+        dashboard.RefreshRequested += RefreshFromUserAction;
         dashboard.RemoteHostsSaved += monitor.SetRemoteHosts;
         singleInstance.ShowRequested += ShowFromBackgroundThread;
 
@@ -48,7 +48,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开 CodexS", null, (_, _) => dashboard.ShowPanel());
         menu.Items.Add("全部标为已读", null, (_, _) => monitor.MarkAllRead());
-        menu.Items.Add("立即刷新额度", null, (_, _) => _ = RefreshQuotaAsync());
+        menu.Items.Add("立即刷新额度与远程监听", null, (_, _) => RefreshFromUserAction());
         menu.Items.Add(new ToolStripSeparator());
         var startup = new ToolStripMenuItem("登录时启动") {
             Checked = AppPaths.IsInstalledExecutable && Installer.IsRunAtLoginEnabled(),
@@ -79,6 +79,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             Interlocked.Exchange(ref quotaRefreshInProgress, 0);
         }
+    }
+
+    private void RefreshFromUserAction()
+    {
+        monitor.RefreshRemoteMonitoring();
+        _ = RefreshQuotaAsync();
     }
 
     private void SnapshotChangedFromBackgroundThread(UsageSnapshot snapshot)

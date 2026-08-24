@@ -22,8 +22,29 @@ enum CodexRemoteHost {
 
 enum RemoteCodexTaskMonitorUpdate {
     case events([CodexTaskEvent], CodexTaskEventOrigin)
+    case connecting(Int, Int)
     case ready(Date)
     case unavailable(String)
+}
+
+struct RemoteConnectionAttemptBudget {
+    static let maximumAttempts = 3
+
+    private(set) var attempts = 0
+
+    mutating func reset() {
+        attempts = 0
+    }
+
+    mutating func beginAttempt() -> Int? {
+        guard attempts < Self.maximumAttempts else { return nil }
+        attempts += 1
+        return attempts
+    }
+
+    var canRetry: Bool {
+        attempts < Self.maximumAttempts
+    }
 }
 
 struct RemoteCodexTaskEnvelope: Decodable {
@@ -132,6 +153,9 @@ final class RemoteCodexTaskMonitor {
     private var recoveryCheckpoint: Date?
     private var streamReady = false
     private var stopped = false
+    private var authorizationGeneration = 0
+    private var connectionGeneration = 0
+    private var attemptBudget = RemoteConnectionAttemptBudget()
 
     init(
         host: String,
@@ -144,9 +168,20 @@ final class RemoteCodexTaskMonitor {
         self.queue = DispatchQueue(label: "CodexS.remote-task-monitor.\(host)", qos: .utility)
     }
 
-    func start() {
+    func authorize() {
         queue.async { [weak self] in
-            guard let self, self.process == nil, !self.stopped else { return }
+            guard let self, !self.stopped else { return }
+            if self.process != nil, self.streamReady {
+                self.attemptBudget.reset()
+                return
+            }
+            self.authorizationGeneration += 1
+            self.attemptBudget.reset()
+            self.restartWorkItem?.cancel()
+            self.restartWorkItem = nil
+            self.process?.terminationHandler = nil
+            self.process?.terminate()
+            self.process = nil
             self.launch()
         }
     }
@@ -154,6 +189,8 @@ final class RemoteCodexTaskMonitor {
     func stop() {
         queue.async {
             self.stopped = true
+            self.authorizationGeneration += 1
+            self.connectionGeneration += 1
             self.restartWorkItem?.cancel()
             self.restartWorkItem = nil
             self.process?.terminationHandler = nil
@@ -171,10 +208,18 @@ final class RemoteCodexTaskMonitor {
             onUpdate(.unavailable("远程任务主机配置无效：\(host)"))
             return
         }
+        guard let attempt = attemptBudget.beginAttempt() else {
+            reportAttemptsExhausted()
+            return
+        }
 
         streamReady = false
         lineBuffer.reset()
         replayWindow = nil
+        onUpdate(.connecting(attempt, RemoteConnectionAttemptBudget.maximumAttempts))
+        connectionGeneration += 1
+        let authorization = authorizationGeneration
+        let connection = connectionGeneration
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -187,6 +232,8 @@ final class RemoteCodexTaskMonitor {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
             "-o", "StrictHostKeyChecking=yes",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
             host,
             Self.remoteCommand
         ]
@@ -196,7 +243,13 @@ final class RemoteCodexTaskMonitor {
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            self?.queue.async { self?.consume(data) }
+            self?.queue.async {
+                guard let self,
+                      self.authorizationGeneration == authorization,
+                      self.connectionGeneration == connection
+                else { return }
+                self.consume(data)
+            }
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in
             _ = handle.availableData
@@ -204,13 +257,14 @@ final class RemoteCodexTaskMonitor {
         process.terminationHandler = { [weak self] finished in
             guard let self else { return }
             self.queue.async {
-                guard self.process === finished else { return }
+                guard self.authorizationGeneration == authorization,
+                      self.process === finished
+                else { return }
                 stdout.fileHandleForReading.readabilityHandler = nil
                 stderr.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
                 guard !self.stopped else { return }
-                self.onUpdate(.unavailable("远程任务主机 \(self.host) 暂时不可用"))
-                self.scheduleRestart()
+                self.handleConnectionFailure()
             }
         }
 
@@ -220,8 +274,7 @@ final class RemoteCodexTaskMonitor {
         } catch {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
-            onUpdate(.unavailable("无法启动远程任务监听：\(host)"))
-            scheduleRestart()
+            handleConnectionFailure()
         }
     }
 
@@ -289,15 +342,38 @@ final class RemoteCodexTaskMonitor {
 
     private func failProtocol(_ message: String) {
         onUpdate(.unavailable(message))
+        connectionGeneration += 1
         process?.terminate()
     }
 
+    private func handleConnectionFailure() {
+        guard !stopped else { return }
+        guard attemptBudget.canRetry else {
+            reportAttemptsExhausted()
+            return
+        }
+        onUpdate(.unavailable(
+            "远程任务主机 \(host) 连接失败，10 秒后重试（\(attemptBudget.attempts + 1)/\(RemoteConnectionAttemptBudget.maximumAttempts)）"
+        ))
+        scheduleRestart()
+    }
+
+    private func reportAttemptsExhausted() {
+        onUpdate(.unavailable(
+            "远程任务主机 \(host) 已尝试 \(RemoteConnectionAttemptBudget.maximumAttempts) 次，监听已停止；点击刷新重试"
+        ))
+    }
+
     private func scheduleRestart() {
-        guard !stopped, restartWorkItem == nil else { return }
+        guard !stopped, attemptBudget.canRetry, restartWorkItem == nil else { return }
+        let generation = authorizationGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.restartWorkItem = nil
-            guard !self.stopped, self.process == nil else { return }
+            guard !self.stopped,
+                  self.authorizationGeneration == generation,
+                  self.process == nil
+            else { return }
             self.launch()
         }
         restartWorkItem = workItem

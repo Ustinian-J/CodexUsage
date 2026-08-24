@@ -86,10 +86,19 @@ grep -Fq 'process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")' Sources/
   || fail "reviewed SSH executable changed"
 grep -Fq 'CodexRemoteHost.validated(host) == host' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH host validation changed"
-for option in 'BatchMode=yes' 'StrictHostKeyChecking=yes' 'ServerAliveCountMax=3'; do
+for option in 'BatchMode=yes' 'StrictHostKeyChecking=yes' 'ServerAliveCountMax=3' \
+  'ControlMaster=no' 'ControlPath=none'; do
   grep -Fq "\"$option\"" Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
     || fail "reviewed SSH safety option changed: $option"
 done
+grep -Fq 'static let maximumAttempts = 3' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "remote SSH connection attempt limit changed"
+grep -Fq 'taskActivityStore.refreshRemoteMonitoring()' Sources/CodexUsageWidget/main.swift \
+  || fail "manual refresh no longer authorizes remote monitoring"
+if grep -A20 -F 'func start(remoteHosts:' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
+  | grep -Fq 'refreshRemoteMonitoring()'; then
+  fail "application startup must not authorize remote monitoring"
+fi
 if grep -Fq 'last_agent_message' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift; then
   fail "remote task monitor must not select or transmit completion message text"
 fi

@@ -9,7 +9,7 @@ CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. I
 - Live 5-hour and 7-day quota rings with the remaining percentage in each ring.
 - A single menu-bar state badge: red/play means running, green/check means idle, and gray/dash means unavailable. Unread completion is an independent blinking amber diamond, so running and unread remain visible together. The popover retains labeled red/yellow/green lights.
 - Incremental local Codex task monitoring, optional native completion/interruption notifications, and a “Mark all read” action that clears yellow attention.
-- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config` to show `@host`, project, running/completed/interrupted state, and an explicit unavailable state on disconnect.
+- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config`, then click Refresh to start monitoring and show `@host`, project, and running/completed/interrupted state. Each manual cycle makes at most three connection attempts, then stops until the next manual refresh.
 - Reset countdowns, used/remaining display modes, and multiple menu bar densities.
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
 - A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.

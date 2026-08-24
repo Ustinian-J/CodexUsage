@@ -17,6 +17,7 @@ if ($remote.Contains('FileName = "ssh.exe"')) {
 }
 foreach ($required in @('Environment.SystemDirectory', '"OpenSSH", "ssh.exe"', 'FileName = OpenSshPath',
         'BatchMode=yes', 'StrictHostKeyChecking=yes', 'ServerAliveCountMax=3',
+        'ControlMaster=no', 'ControlPath=none', 'MaximumAttempts = 3',
         'RemoteHostName.Validate(host)', 'scan_started_at', 'scan_finished_at',
         'handle.read(CHUNK_BYTES)', 'MAX_LINE_BYTES = 1048576', 'ClockRolledBack',
         'RollbackRecoveryWindow', 'isinstance(path, str)', 'except FileNotFoundError:',
@@ -28,6 +29,9 @@ foreach ($forbidden in @('last_agent_message', 'ReadLineAsync', 'ReadToEndAsync'
 }
 
 $localMonitor = Get-Content (Join-Path $root "src/CodexS.Windows/CodexSessionMonitor.cs") -Raw
+if ($localMonitor -match 'internal CodexSessionMonitor\(\)[\s\S]{0,300}RefreshRemoteMonitoring\(\)') {
+    throw "Application startup must not authorize remote monitoring"
+}
 foreach ($forbidden in @('CopyTo(memory)', 'new MemoryStream()', 'reducer.RemoveStaleRunning',
         'IgnoreInaccessible = true', '.Where(Directory.Exists)')) {
     if ($localMonitor.Contains($forbidden)) { throw "Local task monitor contains an obsolete unbounded or runtime-pruning operation: $forbidden" }
@@ -36,6 +40,10 @@ foreach ($required in @('File.GetAttributes(root)', 'IgnoreInaccessible = false'
         'ShouldPublishRemoteEventImmediately',
         'ScheduleStateFlushLocked', 'FlushStateAfterDelayAsync')) {
     if (-not $localMonitor.Contains($required)) { throw "Local monitor safety invariant changed: $required" }
+}
+$trayApplication = Get-Content (Join-Path $root "src/CodexS.Windows/TrayApplicationContext.cs") -Raw
+if (-not $trayApplication.Contains('monitor.RefreshRemoteMonitoring();')) {
+    throw "Manual refresh no longer authorizes remote monitoring"
 }
 $bounded = Get-Content (Join-Path $root "src/CodexS.Windows/BoundedLineBuffer.cs") -Raw
 foreach ($required in @('ChunkBytes = 64 * 1024', 'MaxLineBytes = 1024 * 1024', 'DiscardingOversizedLine')) {

@@ -58,6 +58,7 @@ struct RuntimeStatusMenuView: View {
     @ObservedObject var store: UsageStore
     @ObservedObject var settings: AppSettings
     @ObservedObject var taskActivityStore: CodexTaskActivityStore
+    let refresh: () -> Void
     let openRuntime: (RuntimeScope) -> Void
     let openCurrent: () -> Void
     let openSettings: () -> Void
@@ -123,7 +124,7 @@ struct RuntimeStatusMenuView: View {
             }
             Spacer()
             Button {
-                store.refresh()
+                refresh()
             } label: {
                 Image(systemName: store.isRefreshing ? "hourglass" : "arrow.clockwise")
                     .font(.system(size: 12, weight: .semibold))
@@ -131,7 +132,7 @@ struct RuntimeStatusMenuView: View {
             }
             .buttonStyle(.plain)
             .disabled(store.isRefreshing)
-            .help(language.text("刷新", "Refresh"))
+            .help(language.text("刷新额度并启动远程监听", "Refresh usage and remote monitoring"))
         }
     }
 
