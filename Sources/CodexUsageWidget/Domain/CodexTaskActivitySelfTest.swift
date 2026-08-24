@@ -139,6 +139,133 @@ enum CodexTaskActivitySelfTest {
             "a live task running longer than twelve hours must remain active"
         )
 
+        var livenessTracker = CodexTaskLivenessTracker()
+        let closedObservation = CodexTaskLivenessObservation(
+            taskIdentity: startA.identity,
+            modificationDate: base.addingTimeInterval(-31),
+            isOpen: false
+        )
+        let unicodeRolloutPath = "/tmp/Codex sessions/中文 rollout.jsonl"
+        let lsofOutput = Data(
+            "p123\0\nf9\0n/tmp/Codex sessions/中文 rollout.jsonl\0\nmalformed\0".utf8
+        )
+        expect(
+            CodexRolloutOpenFileProbe.parseOpenPaths(lsofOutput)
+                == [CodexRolloutOpenFileProbe.normalizedPath(unicodeRolloutPath)],
+            "lsof NUL output must preserve paths containing spaces and non-ASCII characters"
+        )
+        let probeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexS-liveness-\(UUID().uuidString)", isDirectory: true)
+        let probeFile = probeDirectory.appendingPathComponent("中文 rollout.jsonl")
+        do {
+            try FileManager.default.createDirectory(
+                at: probeDirectory,
+                withIntermediateDirectories: true
+            )
+            try Data("{}\n".utf8).write(to: probeFile)
+            let handle = try FileHandle(forWritingTo: probeFile)
+            let normalizedProbePath = CodexRolloutOpenFileProbe.normalizedPath(probeFile.path)
+            if case let .success(openPaths) = CodexRolloutOpenFileProbe.run(
+                candidatePaths: [probeFile.path]
+            ) {
+                expect(openPaths == [normalizedProbePath], "an open rollout must be detected by lsof")
+            } else {
+                failures.append("lsof must successfully inspect an open rollout")
+            }
+            try handle.close()
+            if case let .success(openPaths) = CodexRolloutOpenFileProbe.run(
+                candidatePaths: [probeFile.path]
+            ) {
+                expect(openPaths.isEmpty, "a closed rollout must not be reported as open")
+            } else {
+                failures.append("lsof must successfully inspect a closed rollout")
+            }
+            let secondProbeFile = probeDirectory.appendingPathComponent("closed rollout.jsonl")
+            try Data("{}\n".utf8).write(to: secondProbeFile)
+            let reopenedHandle = try FileHandle(forWritingTo: probeFile)
+            if case let .success(openPaths) = CodexRolloutOpenFileProbe.run(
+                candidatePaths: [probeFile.path, secondProbeFile.path]
+            ) {
+                expect(
+                    openPaths == [normalizedProbePath],
+                    "a partial lsof match must distinguish open and closed rollout files"
+                )
+            } else {
+                failures.append("lsof must accept a partial match across rollout candidates")
+            }
+            try reopenedHandle.close()
+            try FileManager.default.removeItem(at: probeDirectory)
+        } catch {
+            failures.append("rollout liveness probe fixture failed: \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: probeDirectory)
+        }
+        expect(
+            livenessTracker.observe([closedObservation], at: base).isEmpty,
+            "one closed-file sample must not clear a running task"
+        )
+        let inactiveIdentities = livenessTracker.observe([closedObservation], at: base.addingTimeInterval(10))
+        expect(
+            inactiveIdentities == [startA.identity],
+            "two closed-file samples after the silence grace must identify an orphaned task"
+        )
+
+        livenessTracker.reset()
+        let freshObservation = CodexTaskLivenessObservation(
+            taskIdentity: startA.identity,
+            modificationDate: base.addingTimeInterval(-5),
+            isOpen: false
+        )
+        expect(
+            livenessTracker.observe([freshObservation], at: base).isEmpty
+                && livenessTracker.observe([closedObservation], at: base.addingTimeInterval(10)).isEmpty,
+            "recent file activity must reset closed-file confirmation"
+        )
+
+        livenessTracker.reset()
+        let openObservation = CodexTaskLivenessObservation(
+            taskIdentity: startA.identity,
+            modificationDate: base.addingTimeInterval(-60),
+            isOpen: true
+        )
+        _ = livenessTracker.observe([closedObservation], at: base)
+        expect(
+            livenessTracker.observe(
+                [closedObservation, openObservation],
+                at: base.addingTimeInterval(10)
+            ).isEmpty
+                && livenessTracker.observe([closedObservation], at: base.addingTimeInterval(20)).isEmpty,
+            "any open copy of a rollout must preserve a long-running task and reset confirmation"
+        )
+
+        let remoteMetadata = CodexTaskMetadata(
+            threadID: "remote-thread",
+            title: metadata.title,
+            projectName: metadata.projectName,
+            sourceLabel: "codex"
+        )
+        let remoteStart = CodexTaskEvent(
+            turnID: "019fda07-9999-7777-8888-111111111111",
+            occurredAt: base,
+            metadata: remoteMetadata,
+            kind: .started
+        )
+        var localOnlyCleanup = CodexTaskActivityReducer(persisted: .empty)
+        _ = localOnlyCleanup.apply(startA, origin: .live)
+        _ = localOnlyCleanup.apply(remoteStart, origin: .live)
+        expect(
+            localOnlyCleanup.removeRunningTasks(
+                localIdentities: [startA.identity, remoteStart.identity]
+            ),
+            "confirmed inactive local threads must clear local running state"
+        )
+        let remainingAfterCleanup = localOnlyCleanup.snapshot(availability: .ready)
+        expect(
+            remainingAfterCleanup.runningTasks.count == 1
+                && remainingAfterCleanup.runningTasks.first?.sourceLabel == "codex"
+                && remainingAfterCleanup.recentCompletions.isEmpty,
+            "local liveness cleanup must preserve remote tasks and must not create completions"
+        )
+
         var consecutive = CodexTaskActivityReducer(persisted: .empty)
         _ = consecutive.apply(startA, origin: .live)
         let newerStart = CodexTaskEvent(

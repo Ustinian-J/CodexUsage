@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-08-24
+
+- Fixed a stuck red task light by reconciling orphaned local starts only after the rollout has been quiet for 30 seconds and two bounded checks confirm that no process still holds it open.
 - Stopped hidden runtimes from scanning their local data sources during background refreshes.
 - Restricted Skill static-file inspection to approved roots, regular files, and a 1 MiB size limit, and moved opt-in debug logging to a symlink-safe per-user temporary file.
 - Hardened local and SSH task monitoring with remote-clock replay watermarks, bounded streaming parsers, baseline-only stale-start filtering, fixed Windows OpenSSH resolution, and recoverable malformed-record handling.
