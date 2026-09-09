@@ -1023,7 +1023,13 @@ final class CodexUsageReader {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codexPath)
-        process.arguments = ["app-server"]
+        process.arguments = [
+            "app-server",
+            "--disable", "plugins",
+            "--disable", "recommended_plugins",
+            "--disable", "remote_plugin",
+            "--disable", "apps"
+        ]
 
         let input = Pipe()
         let output = Pipe()
@@ -1047,7 +1053,7 @@ final class CodexUsageReader {
         }
 
         let responseGroup = DispatchGroup()
-        [2, 3, 4].forEach { _ in responseGroup.enter() }
+        [2, 3].forEach { _ in responseGroup.enter() }
 
         let lock = NSLock()
         var buffer = Data()
@@ -1081,7 +1087,6 @@ final class CodexUsageReader {
                     writeMessage(["method": "initialized"])
                     writeMessage(["id": 2, "method": "account/read", "params": ["refreshToken": false]])
                     writeMessage(["id": 3, "method": "account/rateLimits/read"])
-                    writeMessage(["id": 4, "method": "account/usage/read"])
                 }
                 return
             }
@@ -1106,14 +1111,12 @@ final class CodexUsageReader {
                 snapshot.account = parseAccount(result)
             case 3:
                 parseRateLimits(result, into: &snapshot)
-            case 4:
-                snapshot.cloudLifetimeTokens = parseCloudLifetimeTokens(result)
             default:
                 break
             }
             lock.unlock()
 
-            if [2, 3, 4].contains(id) {
+            if [2, 3].contains(id) {
                 markComplete(id)
             }
         }
@@ -1152,9 +1155,11 @@ final class CodexUsageReader {
             ]
         ])
 
-        if responseGroup.wait(timeout: .now() + 12) == .timedOut {
+        if responseGroup.wait(timeout: .now() + 20) == .timedOut {
             lock.lock()
-            appServerMessages.append("app-server 响应超时")
+            let pending = [2, 3].filter { !completed.contains($0) }
+            let names = pending.map { $0 == 2 ? "account/read" : "account/rateLimits/read" }
+            appServerMessages.append("app-server 响应超时（未完成：\(names.joined(separator: ", "))）")
             lock.unlock()
         }
 
@@ -1168,14 +1173,114 @@ final class CodexUsageReader {
         }
 
         lock.lock()
-        let finalSnapshot = snapshot
-        let finalAppServerMessages = appServerMessages
+        var finalSnapshot = snapshot
+        var finalAppServerMessages = appServerMessages
         lock.unlock()
+
+        if !finalSnapshot.quotaReadSucceeded,
+           var localSnapshot = readLatestLocalRateLimitSnapshot() {
+            localSnapshot.account = finalSnapshot.account ?? localSnapshot.account
+            finalSnapshot = localSnapshot
+            finalAppServerMessages.removeAll { $0.hasPrefix("app-server 响应超时") }
+            finalAppServerMessages.append("账户接口未及时响应，已使用最近的本地会话额度")
+        }
 
         messages.append(contentsOf: finalAppServerMessages)
         messages.append(contentsOf: finalSnapshot.rateLimitDiagnostics)
 
         return finalSnapshot
+    }
+
+    private func readLatestLocalRateLimitSnapshot() -> AppServerSnapshot? {
+        guard let dbPath = firstExistingPath([
+            NSHomeDirectory() + "/.codex/state_5.sqlite",
+            NSHomeDirectory() + "/.codex/sqlite/state_5.sqlite"
+        ]), let sqlitePath = firstExistingPath([
+            "/usr/bin/sqlite3",
+            "/opt/homebrew/bin/sqlite3",
+            "/opt/homebrew/share/android-commandlinetools/platform-tools/sqlite3"
+        ]) else { return nil }
+
+        let query = """
+        SELECT rollout_path AS rolloutPath
+        FROM threads
+        WHERE rollout_path IS NOT NULL AND rollout_path <> ''
+        ORDER BY updated_at DESC
+        LIMIT 24;
+        """
+        let codexRoot = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".codex", isDirectory: true)
+            .standardizedFileURL.path + "/"
+
+        for row in runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: query) {
+            guard let path = row["rolloutPath"] as? String else { continue }
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard url.path.hasPrefix(codexRoot),
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let handle = try? FileHandle(forReadingFrom: url)
+            else { continue }
+            defer { try? handle.close() }
+
+            let end = (try? handle.seekToEnd()) ?? 0
+            let maximumBytes: UInt64 = 512 * 1024
+            try? handle.seek(toOffset: end > maximumBytes ? end - maximumBytes : 0)
+            guard let data = try? handle.readToEnd(), !data.isEmpty else { continue }
+
+            for line in data.split(separator: 10).reversed() {
+                let lineData = Data(line)
+                guard lineData.range(of: Data(#""rate_limits""#.utf8)) != nil,
+                      let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                      let payload = object["payload"] as? [String: Any],
+                      let limits = payload["rate_limits"] as? [String: Any],
+                      limits["limit_id"] as? String == "codex"
+                else { continue }
+
+                let rawWindows = [limits["primary"], limits["secondary"]]
+                let parsedWindows = rawWindows.map(parseLocalRateWindow)
+                let normalized = CodexRateLimitNormalizer.normalize(parsedWindows)
+                guard CodexRateLimitNormalizer.isAuthoritative(
+                    hasWindowFields: limits.keys.contains("primary") || limits.keys.contains("secondary"),
+                    hasMalformedWindow: zip(rawWindows, parsedWindows).contains { raw, parsed in
+                        guard let raw, !(raw is NSNull) else { return false }
+                        return parsed == nil
+                    },
+                    normalized: normalized
+                ) else { continue }
+
+                var result = AppServerSnapshot()
+                result.account = (limits["plan_type"] as? String).map {
+                    AccountInfo(type: "chatgpt", planType: $0, emailPresent: false)
+                }
+                result.limitId = "codex"
+                result.limitName = limits["limit_name"] as? String
+                result.quotaReadSucceeded = true
+                result.fiveHourQuota = normalized.fiveHour
+                result.sevenDayQuota = normalized.sevenDay
+                if let credits = limits["credits"] as? [String: Any] {
+                    result.credits = CreditsInfo(
+                        hasCredits: credits["has_credits"] as? Bool ?? false,
+                        unlimited: credits["unlimited"] as? Bool ?? false,
+                        balance: stringValue(credits["balance"]),
+                        resetCredits: nil
+                    )
+                }
+                return result
+            }
+        }
+        return nil
+    }
+
+    private func parseLocalRateWindow(_ value: Any?) -> RateWindow? {
+        guard let object = value as? [String: Any],
+              let used = doubleValue(object["used_percent"])
+        else { return nil }
+        return RateWindow(
+            usedPercent: used,
+            windowDurationMins: intValue(object["window_minutes"]),
+            resetsAt: doubleValue(object["resets_at"]).map(Date.init(timeIntervalSince1970:))
+        )
     }
 
     private func parseAccount(_ result: [String: Any]) -> AccountInfo? {
@@ -1286,11 +1391,6 @@ final class CodexUsageReader {
         }
 
         return messages
-    }
-
-    private func parseCloudLifetimeTokens(_ result: [String: Any]) -> Int64? {
-        guard let summary = result["summary"] as? [String: Any] else { return nil }
-        return int64Value(summary["lifetimeTokens"])
     }
 
     private func readLocalUsage(context: RuntimeLoadContext, messages: inout [String]) -> LocalUsage? {

@@ -75,4 +75,9 @@ $project = Get-Content (Join-Path $root "src/CodexS.Windows/CodexS.Windows.cspro
 foreach ($required in @('<PublishSingleFile>true</PublishSingleFile>', '<SelfContained>true</SelfContained>', '<PublishTrimmed>false</PublishTrimmed>')) {
     if (-not $project.Contains($required)) { throw "Missing audited publish setting: $required" }
 }
+$quotaClient = Get-Content (Join-Path $root "src/CodexS.Windows/CodexAppServerClient.cs") -Raw
+foreach ($required in @('TimeSpan.FromSeconds(45)', '--disable plugins',
+        'recommended_plugins', 'remote_plugin', '--disable apps')) {
+    if (-not $quotaClient.Contains($required)) { throw "Windows quota reader invariant changed: $required" }
+}
 Write-Host "Windows source security checks passed"

@@ -81,8 +81,23 @@ process_matches="$(grep -nF 'Process()' "${source_code_files[@]}" || true)"
 process_count="$(printf '%s\n' "$process_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
 [[ "$process_count" == "9" ]] || fail "Process launch surface changed: expected 9 reviewed sites, found $process_count"
 
-grep -Fq 'process.arguments = ["app-server"]' Sources/CodexUsageWidget/main.swift \
+grep -Fq 'process.arguments = [' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed Codex app-server launch changed"
+for feature in plugins recommended_plugins remote_plugin apps; do
+  grep -Fq "\"--disable\", \"$feature\"" Sources/CodexUsageWidget/main.swift \
+    || fail "quota reader must disable unrelated app-server feature: $feature"
+done
+grep -Fq 'responseGroup.wait(timeout: .now() + 20)' Sources/CodexUsageWidget/main.swift \
+  || fail "quota reader timeout must cover the app-server reset-credit fallback"
+grep -Fq 'LIMIT 24;' Sources/CodexUsageWidget/main.swift \
+  || fail "local quota fallback must bound the rollout candidate set"
+grep -Fq 'let maximumBytes: UInt64 = 512 * 1024' Sources/CodexUsageWidget/main.swift \
+  || fail "local quota fallback must bound bytes read per rollout"
+grep -Fq 'values.isSymbolicLink != true' Sources/CodexUsageWidget/main.swift \
+  || fail "local quota fallback must reject symlinks"
+if grep -Fq '"id": 4, "method": "account/usage/read"' Sources/CodexUsageWidget/main.swift; then
+  fail "quota reader must not request the unrelated slow cloud usage profile"
+fi
 grep -Fq 'let grepPath = "/usr/bin/grep"' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed grep launch changed"
 grep -Fq 'process.arguments = ["-readonly", "-json", dbPath, query]' Sources/CodexUsageWidget/Services/ReadOnlySQLite.swift \

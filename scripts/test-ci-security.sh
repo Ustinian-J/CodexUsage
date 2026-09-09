@@ -163,6 +163,13 @@ grep -Fq 'terminalSet.Contains(id) || dailyTasks.ContainsKey(id)' windows/src/Co
   echo "missing Windows extended terminal deduplication" >&2
   exit 1
 }
+for invariant in 'TimeSpan.FromSeconds(45)' '--disable plugins' \
+  'recommended_plugins' 'remote_plugin' '--disable apps'; do
+  grep -Fq -- "$invariant" windows/src/CodexS.Windows/CodexAppServerClient.cs || {
+    echo "missing Windows quota reader invariant: $invariant" >&2
+    exit 1
+  }
+done
 
 if grep -Eq 'check-release-ready|notarize-dmg|APPLE_ID|NOTARY_PASSWORD' Makefile; then
   echo "Makefile references an excluded release or credential path" >&2

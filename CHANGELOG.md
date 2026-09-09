@@ -2,13 +2,12 @@
 
 ## Unreleased
 
-## 0.5.0 - 2026-09-09
-
 - Replaced saved, fixed SSH host aliases with automatic following of SSH sessions owned by the local ChatGPT desktop app on macOS and Windows.
 - Added process-ancestry filtering so VS Code, terminal, orphaned, and unrelated SSH sessions cannot trigger CodexS remote monitoring.
 - Stopped remote channels and reconnect backoff within about five seconds after ChatGPT disconnects; manual refresh now rediscovers ChatGPT sessions before any SSH attempt.
 - Limited process inspection to PID, parent PID, and executable name, reading command lines only for proven ChatGPT-owned SSH children; discovery failures stop remote monitoring instead of falling back to stale hosts.
 - Removed obsolete manual remote-host controls while retaining the explicit remote-monitoring consent switch and existing recovery checkpoints.
+- Fixed quota reads against newer ChatGPT-bundled app-server builds by disabling unrelated plugin/app warm-up, removing the cloud usage-profile request from the quota critical path, and falling back to bounded, read-only local Codex session quota snapshots when the account service is slow.
 
 ## 0.4.2 - 2026-08-24
 

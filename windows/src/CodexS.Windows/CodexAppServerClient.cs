@@ -10,6 +10,11 @@ internal sealed record QuotaReadResult(QuotaWindow? FiveHour, QuotaWindow? Seven
 
 internal sealed class CodexAppServerClient
 {
+    private const string QuotaOnlyFeatureFlagText =
+        "--disable plugins --disable recommended_plugins --disable remote_plugin --disable apps";
+    private static readonly string[] DisabledUnrelatedFeatures =
+        ["plugins", "recommended_plugins", "remote_plugin", "apps"];
+
     internal async Task<QuotaReadResult> ReadAsync(CancellationToken cancellationToken)
     {
         var executable = FindCodex();
@@ -27,7 +32,7 @@ internal sealed class CodexAppServerClient
 
         _ = process.StandardError.ReadToEndAsync(cancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(12));
+        timeout.CancelAfter(TimeSpan.FromSeconds(45));
         try
         {
             await WriteAsync(process, new {
@@ -129,13 +134,14 @@ internal sealed class CodexAppServerClient
             var commandInterpreter = Environment.GetEnvironmentVariable("ComSpec")
                 ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
             info = new ProcessStartInfo(commandInterpreter) {
-                Arguments = $"/d /s /c \"\"{executable}\" app-server\""
+                Arguments = $"/d /s /c \"\"{executable}\" app-server {QuotaOnlyFeatureFlagText}\""
             };
         }
         else
         {
             info = new ProcessStartInfo(executable);
             info.ArgumentList.Add("app-server");
+            AddQuotaOnlyFeatureFlags(info.ArgumentList);
         }
         info.UseShellExecute = false;
         info.CreateNoWindow = true;
@@ -143,6 +149,15 @@ internal sealed class CodexAppServerClient
         info.RedirectStandardOutput = true;
         info.RedirectStandardError = true;
         return info;
+    }
+
+    private static void AddQuotaOnlyFeatureFlags(ICollection<string> arguments)
+    {
+        foreach (var feature in DisabledUnrelatedFeatures)
+        {
+            arguments.Add("--disable");
+            arguments.Add(feature);
+        }
     }
 
     private static string? FindCodex()
