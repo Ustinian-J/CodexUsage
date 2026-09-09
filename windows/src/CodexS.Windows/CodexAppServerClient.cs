@@ -34,7 +34,7 @@ internal sealed class CodexAppServerClient
                 id = 1,
                 method = "initialize",
                 @params = new {
-                    clientInfo = new { name = "codexs", title = "CodexS", version = "0.4.2" },
+                    clientInfo = new { name = "codexs", title = "CodexS", version = "0.5.0" },
                     capabilities = new { experimentalApi = true, optOutNotificationMethods = Array.Empty<string>() }
                 }
             }, timeout.Token);

@@ -66,13 +66,20 @@ fi
 ssh_files="$(grep -lE '/usr/bin/ssh|executable(URL|Path).*[sS][sS][hH]' "${source_code_files[@]}" || true)"
 while IFS= read -r file; do
   [[ -z "$file" ]] && continue
-  [[ "$file" == "Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift" ]] \
-    || fail "SSH capability outside the reviewed remote task monitor: $file"
+  case "$file" in
+    Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift|\
+    Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift|\
+    Sources/CodexUsageWidget/Domain/CodexTaskActivitySelfTest.swift)
+      ;;
+    *)
+      fail "SSH capability outside the reviewed remote monitoring boundary: $file"
+      ;;
+  esac
 done <<< "$ssh_files"
 
 process_matches="$(grep -nF 'Process()' "${source_code_files[@]}" || true)"
 process_count="$(printf '%s\n' "$process_matches" | sed '/^$/d' | wc -l | tr -d ' ')"
-[[ "$process_count" == "8" ]] || fail "Process launch surface changed: expected 8 reviewed sites, found $process_count"
+[[ "$process_count" == "9" ]] || fail "Process launch surface changed: expected 9 reviewed sites, found $process_count"
 
 grep -Fq 'process.arguments = ["app-server"]' Sources/CodexUsageWidget/main.swift \
   || fail "reviewed Codex app-server launch changed"
@@ -88,6 +95,18 @@ grep -Fq 'helper.executableURL = executableURL' Sources/CodexUsageWidget/Domain/
   || fail "reviewed self-test helper launch changed"
 grep -Fq 'process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "reviewed SSH executable changed"
+grep -Fq 'process.executableURL = URL(fileURLWithPath: "/bin/ps")' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+  || fail "reviewed ChatGPT SSH discovery executable changed"
+grep -Fq 'arguments: ["-axo", "pid=,ppid=,ucomm="]' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+  || fail "ChatGPT SSH discovery must first inspect process ownership without unrelated command lines"
+grep -Fq 'allowedProcessIDs.contains(processID)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+  || fail "ChatGPT SSH discovery command-line phase must remain scoped to owned SSH process IDs"
+grep -Fq 'CodexBoundedPipeCollector(maximumBytes: maximumOutputBytes)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+  || fail "ChatGPT SSH discovery output must remain bounded"
+grep -Fq 'hasAncestor(record.parentProcessID, in: chatGPTRoots' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+  || fail "remote discovery must require ChatGPT process ancestry"
+grep -Fq 'CodexRemoteHost.validated(token)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+  || fail "discovered SSH hosts must pass validation"
 grep -Fq 'CodexRemoteHost.validated(host) == host' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH host validation changed"
 for option in 'BatchMode=yes' 'StrictHostKeyChecking=yes' 'ServerAliveCountMax=3' \
@@ -148,11 +167,13 @@ grep -Fq 'remoteMonitorIDs[key] == monitorID' Sources/CodexUsageWidget/Services/
   || fail "stale remote monitor callbacks must be rejected by generation"
 grep -Fq 'static let delays: [TimeInterval] = [10, 30, 60, 120, 300]' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH reconnect backoff changed"
-grep -Fq 'guard started, remoteMonitoringEnabled else { return }' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
-  || fail "manual remote reconnect must require persisted authorization"
+grep -Fq 'requestRemoteHostDiscovery(forceRestartUnavailable: true)' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
+  || fail "manual remote refresh must rediscover ChatGPT-owned SSH before reconnecting"
+grep -Fq 'applyDiscoveredRemoteHosts([])' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
+  || fail "remote monitoring must fail closed when ChatGPT SSH discovery is unavailable"
 grep -Fq 'taskActivityStore.refreshRemoteMonitoring()' Sources/CodexUsageWidget/main.swift \
   || fail "manual refresh no longer reconnects authorized remote monitoring"
-grep -Fq 'remoteMonitoringEnabled: settings.remoteMonitoringEnabled' Sources/CodexUsageWidget/main.swift \
+grep -Fq 'taskActivityStore.start(remoteMonitoringEnabled: settings.remoteMonitoringEnabled)' Sources/CodexUsageWidget/main.swift \
   || fail "application startup no longer restores explicit remote-monitor authorization"
 if grep -Fq 'last_agent_message' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift; then
   fail "remote task monitor must not select or transmit completion message text"

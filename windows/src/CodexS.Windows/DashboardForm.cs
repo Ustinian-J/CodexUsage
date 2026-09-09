@@ -16,14 +16,13 @@ internal sealed class DashboardForm : Form
     private readonly Label taskCounts = new() { AutoSize = true, ForeColor = Muted, Font = new Font("Segoe UI", 9) };
     private readonly FlowLayoutPanel resultList = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
     private readonly Label footerStatus = new() { AutoSize = true, ForeColor = Muted, Font = new Font("Segoe UI", 8.5f), Anchor = AnchorStyles.Left };
-    private readonly CheckBox remoteMonitoring = new() { Text = "自动", AutoSize = true, ForeColor = Color.White, BackColor = Background };
-    private readonly TextBox remoteHosts = new() { Width = 220, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(25, 30, 40), ForeColor = Color.White };
+    private readonly CheckBox remoteMonitoring = new() { Text = "跟随 ChatGPT", AutoSize = true, ForeColor = Color.White, BackColor = Background };
+    private readonly Label remoteState = new() { AutoSize = true, ForeColor = Muted, Padding = new Padding(10, 5, 0, 0) };
     private UsageSnapshot snapshot = UsageSnapshot.Starting;
 
     internal event Action? MarkAllReadRequested;
     internal event Action? RefreshRequested;
     internal event Action<string>? ResultOpened;
-    internal event Action<string>? RemoteHostsSaved;
     internal event Action<bool>? RemoteMonitoringChanged;
 
     internal DashboardForm()
@@ -53,9 +52,11 @@ internal sealed class DashboardForm : Form
             : value.Running.Count > 0 ? Color.FromArgb(244, 74, 90) : Color.FromArgb(55, 196, 123);
         if (!value.TaskMonitorReady && !string.IsNullOrWhiteSpace(value.TaskMonitorMessage))
             taskState.Text = $"— {value.TaskMonitorMessage}";
-        taskCounts.Text = $"{value.Running.Count} 个执行中  ·  {value.UnreadCount} 条未读  ·  今日进度 {value.TodayCompletedCount}/{value.TodayTaskCount}  ·  远程{(value.RemoteMonitoringEnabled ? "已开启" : "已关闭")}";
+        taskCounts.Text = $"{value.Running.Count} 个执行中  ·  {value.UnreadCount} 条未读  ·  今日进度 {value.TodayCompletedCount}/{value.TodayTaskCount}  ·  远程{(value.RemoteMonitoringEnabled ? "跟随中" : "已关闭")}";
         if (!remoteMonitoring.Focused) remoteMonitoring.Checked = value.RemoteMonitoringEnabled;
-        if (!remoteHosts.Focused) remoteHosts.Text = string.Join(", ", value.RemoteHosts);
+        remoteState.Text = !value.RemoteMonitoringEnabled ? "远程监听已关闭"
+            : value.RemoteHosts.Count == 0 ? "ChatGPT 未连接 SSH 远程"
+            : $"正在跟随 {value.RemoteHosts.Count} 台远程主机";
         footerStatus.Text = value.QuotaStale
             ? $"额度等待刷新 · {value.StatusMessage ?? "保留上次可信值"}"
             : $"额度已刷新 · {DateTime.Now:HH:mm:ss}";
@@ -119,18 +120,14 @@ internal sealed class DashboardForm : Form
         tasks.Controls.Add(taskLayout);
         root.Controls.Add(tasks, 0, 3);
 
-        var remote = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, BackColor = Background, Padding = new Padding(2, 10, 0, 5) };
+        var remote = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, BackColor = Background, Padding = new Padding(2, 10, 0, 5) };
         remote.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         remote.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         remote.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        remote.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         remote.Controls.Add(new Label { Text = "SSH 远程", AutoSize = true, ForeColor = Muted, Padding = new Padding(0, 5, 8, 0) }, 0, 0);
         remoteMonitoring.CheckedChanged += (_, _) => RemoteMonitoringChanged?.Invoke(remoteMonitoring.Checked);
         remote.Controls.Add(remoteMonitoring, 1, 0);
-        remoteHosts.Dock = DockStyle.Fill;
-        remoteHosts.PlaceholderText = "~/.ssh/config 别名，如 codex";
-        remote.Controls.Add(remoteHosts, 2, 0);
-        remote.Controls.Add(ActionButton("保存", () => RemoteHostsSaved?.Invoke(remoteHosts.Text)), 3, 0);
+        remote.Controls.Add(remoteState, 2, 0);
         root.Controls.Add(remote, 0, 4);
 
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, BackColor = Background, Padding = new Padding(0, 8, 0, 0) };

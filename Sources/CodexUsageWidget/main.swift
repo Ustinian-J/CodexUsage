@@ -2931,7 +2931,6 @@ final class AppSettings: ObservableObject {
     private static let automaticUpdateChecksEnabledKey = "CodexUsage.update.autoCheckEnabled"
     private static let quotaAlertsEnabledKey = "CodexUsage.quotaAlerts.enabled"
     private static let taskCompletionAlertsEnabledKey = "CodexUsage.taskCompletionAlerts.enabled"
-    private static let remoteTaskHostsKey = "CodexUsage.remoteTaskHosts.v1"
     private static let remoteMonitoringEnabledKey = "CodexUsage.remoteMonitoring.enabled.v1"
     private static let subscriptionExpirationEnabledKey = "CodexUsage.subscriptionExpiration.enabled"
     private static let subscriptionExpirationDateKey = "CodexUsage.subscriptionExpiration.date"
@@ -2988,20 +2987,10 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    @Published var remoteTaskHostsText: String {
-        didSet {
-            defaults.set(remoteTaskHostsText, forKey: Self.remoteTaskHostsKey)
-        }
-    }
-
     @Published var remoteMonitoringEnabled: Bool {
         didSet {
             defaults.set(remoteMonitoringEnabled, forKey: Self.remoteMonitoringEnabledKey)
         }
-    }
-
-    var remoteTaskHosts: [String] {
-        CodexRemoteHost.parseList(remoteTaskHostsText)
     }
 
     @Published var subscriptionExpirationEnabled: Bool {
@@ -3064,7 +3053,6 @@ final class AppSettings: ObservableObject {
         } else {
             taskCompletionAlertsEnabled = defaults.bool(forKey: Self.taskCompletionAlertsEnabledKey)
         }
-        remoteTaskHostsText = defaults.string(forKey: Self.remoteTaskHostsKey) ?? ""
         remoteMonitoringEnabled = defaults.bool(forKey: Self.remoteMonitoringEnabledKey)
         if defaults.object(forKey: Self.subscriptionExpirationEnabledKey) == nil {
             subscriptionExpirationEnabled = false
@@ -3856,10 +3844,10 @@ struct SettingsPanelView: View {
                     detail: language.text("界面偏好", "Interface")
                 ) {
                     SettingsToggleRow(
-                        title: language.text("自动监听远程任务", "Monitor remote tasks automatically"),
+                        title: language.text("跟随 ChatGPT 监听远程任务", "Follow ChatGPT remote tasks"),
                         detail: language.text(
-                            "每台主机保持一条 SSH 长连接；断线后最长每 5 分钟重试一次",
-                            "Keeps one SSH connection per host; retries at most once every 5 minutes when offline"
+                            "仅连接 ChatGPT 桌面端当前使用的 SSH 主机；ChatGPT 断开后立即停止重连",
+                            "Only connects to SSH hosts currently used by ChatGPT; stops retrying after ChatGPT disconnects"
                         )
                     ) {
                         SettingsSwitchToggle(isOn: $settings.remoteMonitoringEnabled)
@@ -3983,32 +3971,21 @@ struct SettingsPanelView: View {
 
                 settingsSection(
                     title: language.text("任务监听", "Task Monitoring"),
-                    detail: language.text("本机与 SSH 远程项目", "Local and SSH remote projects")
+                    detail: language.text("本机与 ChatGPT 当前连接的远程项目", "Local and ChatGPT-connected remote projects")
                 ) {
-                    SettingsPickerRow(
-                        title: language.text("远程 SSH 主机", "Remote SSH hosts"),
-                        detail: language.text(
-                            "填写 ~/.ssh/config 中的别名，多个用逗号分隔；留空仅监听本机",
-                            "Use aliases from ~/.ssh/config, separated by commas; leave empty for local only"
-                        )
-                    ) {
-                        TextField("codex", text: $settings.remoteTaskHostsText)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: settingsAccessoryColumnWidth)
-                    }
                     SettingsValueRow(
-                        title: language.text("远程隐私", "Remote privacy"),
+                        title: language.text("远程跟随状态", "Remote follow status"),
                         detail: language.text(
-                            "只读回传开始/完成/中断、项目名和线程标题；不传对话正文与凭据",
-                            "Read-only task events, project names, and thread titles; no transcript text or credentials"
+                            "只识别由 ChatGPT 桌面端启动的 SSH；不读取凭据与对话正文",
+                            "Only detects SSH owned by ChatGPT; never reads credentials or transcript text"
                         ),
-                        value: settings.remoteTaskHosts.isEmpty
-                            ? language.text("未启用", "Off")
-                            : !settings.remoteMonitoringEnabled
+                        value: !settings.remoteMonitoringEnabled
                             ? language.text("已关闭自动监听", "Automatic monitoring off")
+                            : taskActivityStore.snapshot.remoteHosts.isEmpty
+                            ? language.text("ChatGPT 未连接远程", "ChatGPT is not connected remotely")
                             : language.text(
-                                "已监听 \(settings.remoteTaskHosts.count) 台",
-                                "Monitoring \(settings.remoteTaskHosts.count) configured host(s)"
+                                "已跟随 \(taskActivityStore.snapshot.remoteHosts.count) 台",
+                                "Following \(taskActivityStore.snapshot.remoteHosts.count) host(s)"
                             )
                     )
                 }
@@ -8971,10 +8948,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             _ = installGlobalHotKeyHandler()
         }
         store.updateVisibleRuntimeScopes(settings.visibleRuntimeScopes)
-        taskActivityStore.start(
-            remoteHosts: settings.remoteTaskHosts,
-            remoteMonitoringEnabled: settings.remoteMonitoringEnabled
-        )
+        taskActivityStore.start(remoteMonitoringEnabled: settings.remoteMonitoringEnabled)
         store.start()
         updateStore.startAutomaticCheck()
     }
@@ -9333,16 +9307,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             .receive(on: RunLoop.main)
             .sink { [weak self] enabled in
                 self?.taskCompletionAlertService.updateAuthorization(enabled: enabled)
-            }
-            .store(in: &cancellables)
-
-        settings.$remoteTaskHostsText
-            .map(CodexRemoteHost.parseList)
-            .removeDuplicates()
-            .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] hosts in
-                self?.taskActivityStore.configureRemoteHosts(hosts)
             }
             .store(in: &cancellables)
 

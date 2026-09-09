@@ -37,9 +37,6 @@ foreach ($required in @('lock (processGate)', 'disposed = true;', 'activeProcess
 }
 
 $localMonitor = Get-Content (Join-Path $root "src/CodexS.Windows/CodexSessionMonitor.cs") -Raw
-if (-not $localMonitor.Contains('if (remoteMonitoringEnabled) SynchronizeRemoteMonitoring();')) {
-    throw "Application startup must restore explicit remote-monitor authorization"
-}
 if (-not $localMonitor.Contains('if (!remoteMonitoringEnabled) return;')) {
     throw "Remote monitoring must remain disabled without explicit persisted authorization"
 }
@@ -50,8 +47,15 @@ foreach ($forbidden in @('CopyTo(memory)', 'new MemoryStream()', 'reducer.Remove
 foreach ($required in @('File.GetAttributes(root)', 'IgnoreInaccessible = false',
         'ShouldPublishRemoteEventImmediately',
         'ScheduleStateFlushLocked', 'FlushStateAfterDelayAsync',
-        'remoteMonitorIds.GetValueOrDefault(host) != monitorId')) {
+        'remoteMonitorIds.GetValueOrDefault(host) != monitorId',
+        'ChatGPTSshHostDiscovery.TryDiscover', 'forceRestartUnavailable: true')) {
     if (-not $localMonitor.Contains($required)) { throw "Local monitor safety invariant changed: $required" }
+}
+$discovery = Get-Content (Join-Path $root "src/CodexS.Windows/ChatGPTSshHostDiscovery.cs") -Raw
+foreach ($required in @('CreateToolhelp32Snapshot', 'Process32First', 'Process32Next',
+        'ProcessCommandLineInformation', 'ChatGPT.exe', 'ssh.exe',
+        'HasAncestor(record.ParentProcessId', 'RemoteHostName.Validate')) {
+    if (-not $discovery.Contains($required)) { throw "ChatGPT SSH discovery safety invariant changed: $required" }
 }
 $trayApplication = Get-Content (Join-Path $root "src/CodexS.Windows/TrayApplicationContext.cs") -Raw
 if (-not $trayApplication.Contains('monitor.RefreshRemoteMonitoring();')) {

@@ -16,6 +16,24 @@ internal static class SelfTestRunner
             Expect(RemoteHostName.Validate("host;touch") is null, "remote shell metacharacters rejected");
             Expect(RemoteHostName.Parse("codex, build-box CODEX").SequenceEqual(["codex", "build-box"]),
                 "remote aliases deduplicated");
+            var discoveredHosts = ChatGPTSshHostDiscovery.Hosts([
+                new NativeProcessRecord(100, 1, "ChatGPT.exe", null),
+                new NativeProcessRecord(101, 100, "ChatGPT Helper.exe", null),
+                new NativeProcessRecord(102, 101, "ssh.exe",
+                    @"C:\Windows\System32\OpenSSH\ssh.exe -T -o BatchMode=yes remote-one command"),
+                new NativeProcessRecord(200, 1, "Code.exe", null),
+                new NativeProcessRecord(201, 200, "ssh.exe", @"ssh.exe -T ignored-vscode command"),
+                new NativeProcessRecord(300, 1, "ssh.exe", @"ssh.exe -T orphaned-session command"),
+                new NativeProcessRecord(103, 100, "ssh.exe", @"ssh.exe -F C:\temp\ssh.conf -- remote-two command")
+            ]);
+            Expect(discoveredHosts.SequenceEqual(["remote-one", "remote-two"]),
+                "remote discovery follows only SSH descendants of ChatGPT");
+            Expect(ChatGPTSshHostDiscovery.SshHost(
+                       @"C:\Windows\System32\OpenSSH\ssh.exe -T -o BatchMode=yes host_alias command")
+                   == "host_alias",
+                "SSH option values must not be mistaken for the host");
+            Expect(ChatGPTSshHostDiscovery.SshHost(@"ssh.exe -T bad;host command") is null,
+                "discovered SSH aliases must pass validation");
             Expect(Path.IsPathRooted(RemoteCodexTaskMonitor.OpenSshPath)
                    && RemoteCodexTaskMonitor.OpenSshPath == Path.Combine(
                        Environment.SystemDirectory, "OpenSSH", "ssh.exe"),

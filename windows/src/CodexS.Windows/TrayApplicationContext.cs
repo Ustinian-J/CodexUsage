@@ -21,7 +21,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         dashboard.MarkAllReadRequested += monitor.MarkAllRead;
         dashboard.ResultOpened += id => { monitor.MarkRead(id); dashboard.ShowPanel(); };
         dashboard.RefreshRequested += RefreshFromUserAction;
-        dashboard.RemoteHostsSaved += monitor.SetRemoteHosts;
         dashboard.RemoteMonitoringChanged += monitor.SetRemoteMonitoringEnabled;
         singleInstance.ShowRequested += ShowFromBackgroundThread;
 

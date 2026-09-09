@@ -2,14 +2,14 @@
 
 CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows 托盘应用，用圆环/双条展示 Codex 5 小时与每周额度余量，并统计今日、近 7 天和累计 token。它还能提示任务运行、完成和未读状态，主窗口会把本机 Codex 对话和自动化任务整理成今日任务看板。
 
-> 当前版本为 `0.4.2`。[项目仓库](https://github.com/Ustinian-J/CodexUsage)使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
+> 当前版本为 `0.5.0`。[项目仓库](https://github.com/Ustinian-J/CodexUsage)使用干净的 GitHub Intel 与 Apple Silicon macOS runner 构建验证；在 Release 发布前，请仅从源码或当前仓库的 CI 产物安装。
 
 ## 功能
 
 - 菜单栏实时显示 5 小时、7 天额度圆环，圆环中央显示剩余百分比。
 - 菜单栏右侧使用单一状态徽章：红色播放符号表示执行中，绿色勾表示空闲，灰色横线表示监控不可用；未读完成以独立黄色菱形角标闪烁，因此“执行中 + 未读”可同时表达。弹窗内保留带文字说明的红黄绿灯。
 - 增量读取 Codex 本机会话事件，在任务完成或中断后发送可选的 macOS 本地通知，并提供“全部已读”清除黄灯。
-- 可选监听 SSH 远程项目：在设置中填写 `~/.ssh/config` 主机别名并开启“自动监听远程任务”。Mac 版优先通过仅当前用户可访问的临时链接复用已经存活的 OpenSSH 控制连接，避免再次触发跳板机 MFA；没有可复用连接时才建立隔离且不持久化的连接。Mac 与 Windows 版断线后按 10 秒、30 秒、1 分钟、2 分钟、5 分钟退避，并以 5 分钟封顶自动恢复；关闭开关会立即停止 CodexS 自己的连接与后续重试，不关闭被复用的原连接。
+- 可选跟随 ChatGPT 桌面端监听 SSH 远程项目：不再保存或依赖固定主机名，只识别进程父子链上确属 ChatGPT 的 SSH 会话。ChatGPT 连接远程后 CodexS 自动跟随；ChatGPT 断开后，CodexS 最迟约 5 秒停止对应连接与重试。手动刷新也会先重新确认 ChatGPT 当前连接，未连接时不会发起 SSH。Mac 版优先复用已经存活的同用户 OpenSSH 控制连接；没有可复用连接时才建立隔离、非持久连接。
 - 展示额度重置时间，并支持剩余量/已用量口径和多种菜单栏密度。
 - 汇总单日、近 7 天和累计 token，细分未缓存输入、缓存输入与输出。
 - 从本机 Codex 线程和启用中的 automation 生成今日任务看板；今日对话进度按 `今日已归档对话 / 今日对话任务总数` 估算，定时任务不计入完成率。
@@ -33,6 +33,7 @@ CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows �
 
 - 无第三方 Swift、npm、Python、CocoaPods 或预编译框架依赖。
 - 不读取 `~/.codex/auth.json`、Keychain、浏览器 cookie 或云凭据；启用远程监听时由系统 OpenSSH 使用现有配置，CodexS 自身不打开、复制或保存 SSH key、密码。
+- 远程发现先读取本机 PID、父 PID 和进程名，再仅读取属于 ChatGPT 的 SSH 子进程命令行以取得主机别名；不会读取其他应用的命令行或把 VS Code/终端 SSH 当作 ChatGPT 连接。
 - 不上传 usage、对话、任务、路径或账户数据。
 - 任务监控只提取开始、完成和中断所需字段；即使日志行包含完成回复正文 `last_agent_message`，也会忽略且绝不保存、显示、通知或上传。
 - Skill 静态统计只读取批准的本机 Skill 根目录内、大小不超过 1 MiB 的普通 `SKILL.md` 文件；拒绝符号链接、非普通文件和越界路径。
@@ -83,7 +84,7 @@ Windows 可在 PowerShell 中用 `Get-FileHash CodexS-<version>-windows-x64.exe 
 - macOS 13 或更新版本。
 - 本机已安装并登录 Codex。
 - Codex 至少使用过一次，以生成本机状态数据库。
-- Windows 版监控原生 Windows Codex 会话，也可通过 SSH 监听装有 Python 3 的 Linux/macOS 远程主机；仅存在于本机 WSL 且未通过 SSH 配置的会话暂不支持。
+- Windows 版监控原生 Windows Codex 会话，也会跟随 ChatGPT 桌面端连接的、装有 Python 3 的 Linux/macOS SSH 主机；仅存在于本机 WSL 且未由 ChatGPT 通过 SSH 连接的会话暂不支持。
 - 远程主机需通过 strict known-host 校验并安装 Python 3。需要 MFA 的 Mac 跳板链路必须已有可复用的 OpenSSH 控制连接，否则批处理模式不能代填验证码，CodexS 会按退避周期显示重连状态。
 
 ## 从源码构建

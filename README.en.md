@@ -2,14 +2,14 @@
 
 CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. It shows remaining Codex 5-hour and weekly quota as rings/two bars, tracks today/7-day/lifetime tokens, reports running and completed task activity, and builds a daily task board from local Codex conversations and automations.
 
-> The current version is `0.4.2`. The [project repository](https://github.com/Ustinian-J/CodexUsage) is verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
+> The current version is `0.5.0`. The [project repository](https://github.com/Ustinian-J/CodexUsage) is verified on clean GitHub Intel and Apple Silicon macOS runners. Until a Release is published, install only from source or from this repository's own CI artifact.
 
 ## Features
 
 - Live 5-hour and 7-day quota rings with the remaining percentage in each ring.
 - A single menu-bar state badge: red/play means running, green/check means idle, and gray/dash means unavailable. Unread completion is an independent blinking amber diamond, so running and unread remain visible together. The popover retains labeled red/yellow/green lights.
 - Incremental local Codex task monitoring, optional native completion/interruption notifications, and a “Mark all read” action that clears yellow attention.
-- Optional SSH task monitoring on macOS and Windows. Add aliases from `~/.ssh/config` and enable automatic remote monitoring. On macOS, CodexS first reuses a live OpenSSH control connection through a user-only temporary link, avoiding another jump-host MFA challenge; it opens an isolated, non-persistent connection only when no reusable connection exists. Reconnects back off through 10 seconds, 30 seconds, 1 minute, 2 minutes, and a 5-minute cap. Turning the switch off stops CodexS-owned channels and retries without closing a reused connection.
+- Optional SSH task monitoring that follows the ChatGPT desktop app on macOS and Windows. CodexS no longer stores or depends on fixed host names: it accepts only SSH processes whose ancestry belongs to ChatGPT. It follows a host after ChatGPT connects and stops the corresponding connection and retries within about five seconds after ChatGPT disconnects. Manual refresh also rediscovers ChatGPT connections first and never starts SSH when none exist. On macOS, CodexS first reuses a live same-user OpenSSH control connection and otherwise opens an isolated, non-persistent channel.
 - Reset countdowns, used/remaining display modes, and multiple menu bar densities.
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
 - A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.
@@ -33,6 +33,7 @@ This repository does not fork upstream history. Source was imported through an e
 
 - No third-party Swift, npm, Python, CocoaPods, or precompiled framework dependencies.
 - No access to `~/.codex/auth.json`, Keychain, browser cookies, or cloud credentials. When remote monitoring is enabled, system OpenSSH uses the existing configuration; CodexS never opens, copies, or stores SSH keys or passwords.
+- Remote discovery first reads only local process IDs, parent IDs, and executable names, then reads command lines only for SSH children owned by ChatGPT to obtain the host alias. It neither reads unrelated application command lines nor mistakes VS Code or terminal SSH for ChatGPT.
 - No upload of usage, conversations, tasks, paths, or account data.
 - Task monitoring extracts only the start, completion, and interruption fields it needs. If a log line contains `last_agent_message`, CodexS ignores it and never stores, displays, notifies, or uploads that text.
 - Static Skill statistics read only regular `SKILL.md` files up to 1 MiB under approved local Skill roots; symlinks, non-regular files, and paths outside those roots are rejected.
@@ -83,7 +84,7 @@ Open the DMG and drag `CodexS.app` to `Applications`. If `CodexUsage.app` is alr
 - macOS 13 or later.
 - A local, signed-in Codex installation.
 - Codex must have been used at least once so its local state database exists.
-- Windows monitors native Windows Codex sessions and can also monitor Linux/macOS SSH hosts with Python 3. WSL-only sessions are not detected unless exposed through an SSH host alias.
+- Windows monitors native Windows Codex sessions and follows Python 3-capable Linux/macOS SSH hosts connected by the ChatGPT desktop app. WSL-only sessions are not detected unless ChatGPT connects to them through SSH.
 - Remote hosts require strict known-host verification and Python 3. A macOS jump chain that requires MFA needs an already-live reusable OpenSSH control connection; batch mode cannot enter the code, so otherwise CodexS remains in its capped reconnect cycle.
 
 ## Build From Source

@@ -104,10 +104,6 @@ grep -Fq 'monitor.RefreshRemoteMonitoring();' windows/src/CodexS.Windows/TrayApp
   echo "Windows manual refresh no longer reconnects authorized remote monitoring" >&2
   exit 1
 }
-grep -Fq 'if (remoteMonitoringEnabled) SynchronizeRemoteMonitoring();' windows/src/CodexS.Windows/CodexSessionMonitor.cs || {
-  echo "Windows application startup no longer restores explicit remote-monitor authorization" >&2
-  exit 1
-}
 grep -Fq 'if (!remoteMonitoringEnabled) return;' windows/src/CodexS.Windows/CodexSessionMonitor.cs || {
   echo "Windows remote monitoring no longer requires explicit persisted authorization" >&2
   exit 1
@@ -118,8 +114,25 @@ for forbidden in 'last_agent_message' 'ReadLineAsync' 'ReadToEndAsync' 'handle.r
     exit 1
   fi
 done
-
 WINDOWS_LOCAL_MONITOR='windows/src/CodexS.Windows/CodexSessionMonitor.cs'
+WINDOWS_SSH_DISCOVERY='windows/src/CodexS.Windows/ChatGPTSshHostDiscovery.cs'
+for invariant in 'CreateToolhelp32Snapshot' 'Process32First' 'Process32Next' \
+  'ProcessCommandLineInformation' 'ChatGPT.exe' 'ssh.exe' \
+  'HasAncestor(record.ParentProcessId' 'RemoteHostName.Validate'; do
+  grep -Fq "$invariant" "$WINDOWS_SSH_DISCOVERY" || {
+    echo "missing Windows ChatGPT SSH discovery invariant: $invariant" >&2
+    exit 1
+  }
+done
+grep -Fq 'ChatGPTSshHostDiscovery.TryDiscover' "$WINDOWS_LOCAL_MONITOR" || {
+  echo "Windows remote monitoring no longer follows ChatGPT SSH sessions" >&2
+  exit 1
+}
+grep -Fq 'forceRestartUnavailable: true' "$WINDOWS_LOCAL_MONITOR" || {
+  echo "Windows manual refresh must rediscover ChatGPT SSH sessions" >&2
+  exit 1
+}
+
 for forbidden in 'CopyTo(memory)' 'new MemoryStream()' 'reducer.RemoveStaleRunning' \
   'IgnoreInaccessible = true' '.Where(Directory.Exists)'; do
   if grep -Fq "$forbidden" "$WINDOWS_LOCAL_MONITOR"; then

@@ -79,15 +79,8 @@ internal sealed class RemoteHostStore
 
     private Settings settings = LoadSettings();
 
-    internal IReadOnlyList<string> Hosts => settings.Hosts;
     internal bool Enabled => settings.Enabled;
     internal DateTimeOffset? Checkpoint(string host) => settings.Checkpoints.GetValueOrDefault(host);
-
-    internal void SaveHosts(IReadOnlyList<string> hosts)
-    {
-        settings.Hosts = hosts.ToList();
-        Save();
-    }
 
     internal void SaveEnabled(bool enabled)
     {
@@ -108,12 +101,11 @@ internal sealed class RemoteHostStore
             if (!File.Exists(AppPaths.RemoteHostsFile)) return new Settings { SchemaVersion = 3 };
             var value = JsonSerializer.Deserialize<Settings>(File.ReadAllText(AppPaths.RemoteHostsFile));
             if (value is null) return new Settings { SchemaVersion = 3 };
-            var hosts = RemoteHostName.Parse(string.Join(",", value.Hosts ?? new List<string>())).ToList();
             var checkpoints = value.Checkpoints
                 ?? new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
             return new Settings {
                 SchemaVersion = 3,
-                Hosts = hosts,
+                Hosts = [],
                 Enabled = RestoresMonitoringAuthorization(value.SchemaVersion, value.Enabled),
                 Checkpoints = UsesRemoteClockCheckpoints(value.SchemaVersion)
                     ? new Dictionary<string, DateTimeOffset>(checkpoints, StringComparer.OrdinalIgnoreCase)

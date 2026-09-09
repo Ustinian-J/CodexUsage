@@ -244,8 +244,13 @@ final class CodexTaskActivityStore: ObservableObject {
     private var remoteMonitorIDs: [String: UUID] = [:]
     private var remoteCheckpoints: [String: Date]
     private var sourceAvailability: [String: CodexTaskMonitorAvailability] = ["local": .starting]
-    private var configuredRemoteHosts: [String] = []
+    private var activeRemoteHosts: [String] = []
     private var remoteMonitoringEnabled = false
+    private let remoteDiscoveryQueue = DispatchQueue(label: "CodexS.chatgpt-ssh-discovery", qos: .utility)
+    private var remoteDiscoveryTimer: DispatchSourceTimer?
+    private var remoteDiscoveryGeneration = 0
+    private var remoteDiscoveryInFlight = false
+    private var pendingForcedRemoteRefresh = false
     private var started = false
 
     init(
@@ -265,10 +270,9 @@ final class CodexTaskActivityStore: ObservableObject {
         self.snapshot = reducer.snapshot(availability: .starting)
     }
 
-    func start(remoteHosts: [String] = [], remoteMonitoringEnabled: Bool = false) {
+    func start(remoteMonitoringEnabled: Bool = false) {
         guard !started else { return }
         started = true
-        configuredRemoteHosts = normalizedRemoteHosts(remoteHosts)
         self.remoteMonitoringEnabled = remoteMonitoringEnabled
         let monitor = CodexTaskMonitor(
             homeDirectory: homeDirectory,
@@ -281,7 +285,7 @@ final class CodexTaskActivityStore: ObservableObject {
         }
         self.localMonitor = monitor
         monitor.start()
-        if remoteMonitoringEnabled { synchronizeRemoteMonitors() }
+        if remoteMonitoringEnabled { startRemoteDiscovery() }
         publishAndPersist()
     }
 
@@ -292,17 +296,9 @@ final class CodexTaskActivityStore: ObservableObject {
         for monitor in remoteMonitors.values { monitor.stop() }
         remoteMonitors.removeAll()
         remoteMonitorIDs.removeAll()
+        activeRemoteHosts = []
+        stopRemoteDiscovery()
         sourceAvailability = ["local": .starting]
-    }
-
-    func configureRemoteHosts(_ hosts: [String]) {
-        let normalized = normalizedRemoteHosts(hosts)
-        guard normalized != configuredRemoteHosts else { return }
-        configuredRemoteHosts = normalized
-        guard started else { return }
-        removeUnconfiguredRemoteMonitors()
-        if remoteMonitoringEnabled { synchronizeRemoteMonitors() }
-        publishAndPersist()
     }
 
     func setRemoteMonitoringEnabled(_ enabled: Bool) {
@@ -310,32 +306,17 @@ final class CodexTaskActivityStore: ObservableObject {
         remoteMonitoringEnabled = enabled
         guard started else { return }
         if enabled {
-            synchronizeRemoteMonitors()
+            startRemoteDiscovery()
         } else {
-            for (key, monitor) in remoteMonitors {
-                monitor.stop()
-                sourceAvailability.removeValue(forKey: "remote:\(key)")
-                _ = reducer.removeRunningTasks(sourceLabel: key)
-            }
-            remoteMonitors.removeAll()
-            remoteMonitorIDs.removeAll()
+            stopRemoteDiscovery()
+            applyDiscoveredRemoteHosts([])
         }
         publishAndPersist()
     }
 
     func refreshRemoteMonitoring() {
         guard started, remoteMonitoringEnabled else { return }
-        removeUnconfiguredRemoteMonitors()
-        for host in configuredRemoteHosts {
-            let key = host.lowercased()
-            if let monitor = remoteMonitors[key] {
-                if sourceAvailability["remote:\(key)"] == .ready { continue }
-                remoteMonitorIDs.removeValue(forKey: key)
-                remoteMonitors.removeValue(forKey: key)
-                monitor.stop()
-            }
-            startRemoteMonitor(host: host)
-        }
+        requestRemoteHostDiscovery(forceRestartUnavailable: true)
     }
 
     func markRead(_ identity: String) {
@@ -393,7 +374,7 @@ final class CodexTaskActivityStore: ObservableObject {
         let key = host.lowercased()
         guard remoteMonitoringEnabled,
               remoteMonitorIDs[key] == monitorID,
-              configuredRemoteHosts.contains(where: {
+              activeRemoteHosts.contains(where: {
             $0.caseInsensitiveCompare(host) == .orderedSame
         }) else { return }
         let sourceID = "remote:\(key)"
@@ -425,8 +406,8 @@ final class CodexTaskActivityStore: ObservableObject {
         }
     }
 
-    private func removeUnconfiguredRemoteMonitors() {
-        let desired = Set(configuredRemoteHosts.map { $0.lowercased() })
+    private func removeInactiveRemoteMonitors() {
+        let desired = Set(activeRemoteHosts.map { $0.lowercased() })
         let removedKeys = remoteMonitors.keys.filter { !desired.contains($0) }
         for key in removedKeys {
             remoteMonitors.removeValue(forKey: key)?.stop()
@@ -437,10 +418,89 @@ final class CodexTaskActivityStore: ObservableObject {
     }
 
     private func synchronizeRemoteMonitors() {
-        removeUnconfiguredRemoteMonitors()
-        for host in configuredRemoteHosts where remoteMonitors[host.lowercased()] == nil {
+        removeInactiveRemoteMonitors()
+        for host in activeRemoteHosts where remoteMonitors[host.lowercased()] == nil {
             startRemoteMonitor(host: host)
         }
+    }
+
+    private func startRemoteDiscovery() {
+        guard remoteDiscoveryTimer == nil else {
+            requestRemoteHostDiscovery()
+            return
+        }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 5, repeating: 5, leeway: .milliseconds(500))
+        timer.setEventHandler { [weak self] in self?.requestRemoteHostDiscovery() }
+        remoteDiscoveryTimer = timer
+        timer.resume()
+        requestRemoteHostDiscovery()
+    }
+
+    private func stopRemoteDiscovery() {
+        remoteDiscoveryTimer?.cancel()
+        remoteDiscoveryTimer = nil
+        remoteDiscoveryGeneration += 1
+        remoteDiscoveryInFlight = false
+        pendingForcedRemoteRefresh = false
+        sourceAvailability.removeValue(forKey: "remote-discovery")
+    }
+
+    private func requestRemoteHostDiscovery(forceRestartUnavailable: Bool = false) {
+        guard started, remoteMonitoringEnabled else { return }
+        if remoteDiscoveryInFlight {
+            pendingForcedRemoteRefresh = pendingForcedRemoteRefresh || forceRestartUnavailable
+            return
+        }
+        remoteDiscoveryInFlight = true
+        remoteDiscoveryGeneration += 1
+        let generation = remoteDiscoveryGeneration
+        remoteDiscoveryQueue.async { [weak self] in
+            let result = ChatGPTSSHHostDiscovery.discover()
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.started,
+                      self.remoteMonitoringEnabled,
+                      self.remoteDiscoveryGeneration == generation
+                else { return }
+                self.remoteDiscoveryInFlight = false
+                switch result {
+                case let .success(hosts):
+                    self.sourceAvailability.removeValue(forKey: "remote-discovery")
+                    self.applyDiscoveredRemoteHosts(hosts, forceRestartUnavailable: forceRestartUnavailable)
+                case .failure:
+                    self.sourceAvailability["remote-discovery"] = .unavailable(
+                        "无法读取 ChatGPT 的 SSH 连接，远程监听已停止"
+                    )
+                    self.applyDiscoveredRemoteHosts([])
+                }
+                if self.pendingForcedRemoteRefresh {
+                    self.pendingForcedRemoteRefresh = false
+                    self.requestRemoteHostDiscovery(forceRestartUnavailable: true)
+                }
+            }
+        }
+    }
+
+    private func applyDiscoveredRemoteHosts(
+        _ hosts: [String],
+        forceRestartUnavailable: Bool = false
+    ) {
+        activeRemoteHosts = CodexRemoteHost.parseList(hosts.joined(separator: ","))
+        removeInactiveRemoteMonitors()
+        if forceRestartUnavailable {
+            for host in activeRemoteHosts {
+                let key = host.lowercased()
+                guard let monitor = remoteMonitors[key],
+                      sourceAvailability["remote:\(key)"] != .ready
+                else { continue }
+                remoteMonitorIDs.removeValue(forKey: key)
+                remoteMonitors.removeValue(forKey: key)
+                monitor.stop()
+            }
+        }
+        if remoteMonitoringEnabled { synchronizeRemoteMonitors() }
+        publishAndPersist()
     }
 
     private func startRemoteMonitor(host: String) {
@@ -460,10 +520,6 @@ final class CodexTaskActivityStore: ObservableObject {
         monitor.authorize()
     }
 
-    private func normalizedRemoteHosts(_ hosts: [String]) -> [String] {
-        CodexRemoteHost.parseList(hosts.joined(separator: ","))
-    }
-
     private func combinedAvailability() -> CodexTaskMonitorAvailability {
         let orderedKeys = sourceAvailability.keys.sorted()
         for key in orderedKeys {
@@ -481,7 +537,7 @@ final class CodexTaskActivityStore: ObservableObject {
     private func publishAndPersist() {
         snapshot = reducer.snapshot(
             availability: combinedAvailability(),
-            remoteHosts: configuredRemoteHosts,
+            remoteHosts: activeRemoteHosts,
             remoteMonitoringEnabled: remoteMonitoringEnabled
         )
         persistence.save(reducer.persistedState(

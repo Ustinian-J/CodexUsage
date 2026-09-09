@@ -26,8 +26,12 @@ internal sealed class CodexSessionMonitor : IDisposable
     private readonly TaskActivityReducer reducer;
     private readonly Dictionary<string, RemoteCodexTaskMonitor> remoteMonitors = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Guid> remoteMonitorIds = new(StringComparer.OrdinalIgnoreCase);
-    private IReadOnlyList<string> configuredRemoteHosts;
+    private IReadOnlyList<string> activeRemoteHosts = [];
     private bool remoteMonitoringEnabled;
+    private DateTimeOffset nextRemoteDiscovery = DateTimeOffset.MinValue;
+    private int remoteDiscoveryInProgress;
+    private int pendingForcedRemoteRefresh;
+    private string? remoteDiscoveryMessage;
     private readonly Dictionary<string, (bool Ready, string? Message)> remoteStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> remoteReplays = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cancellation = new();
@@ -49,28 +53,18 @@ internal sealed class CodexSessionMonitor : IDisposable
     internal CodexSessionMonitor()
     {
         reducer = new TaskActivityReducer(stateStore.Load(), startedAt);
-        configuredRemoteHosts = remoteHostStore.Hosts.ToArray();
         remoteMonitoringEnabled = remoteHostStore.Enabled;
     }
 
     internal void Start()
     {
         worker ??= Task.Run(LoopAsync);
-        if (remoteMonitoringEnabled) SynchronizeRemoteMonitoring();
     }
 
     internal UsageSnapshot Current
     {
         get { lock (gate) return MakeSnapshot(); }
     }
-
-    internal string RemoteHostsText
-    {
-        get { lock (gate) return string.Join(", ", configuredRemoteHosts); }
-    }
-
-    internal void SetRemoteHosts(string rawValue) =>
-        ConfigureRemoteHosts(RemoteHostName.Parse(rawValue));
 
     internal void SetRemoteMonitoringEnabled(bool enabled)
     {
@@ -91,55 +85,21 @@ internal sealed class CodexSessionMonitor : IDisposable
                 remoteMonitorIds.Clear();
                 remoteStatus.Clear();
                 remoteReplays.Clear();
+                activeRemoteHosts = [];
+                remoteDiscoveryMessage = null;
                 stateStore.Save(reducer.Persisted());
                 stateDirty = false;
             }
             PublishLocked();
         }
         foreach (var monitor in removed) monitor.Dispose();
-        if (enabled) SynchronizeRemoteMonitoring();
+        if (enabled) _ = Task.Run(() => RefreshFollowedRemoteHosts(forceRestartUnavailable: false));
     }
 
     internal void RefreshRemoteMonitoring()
     {
-        List<RemoteCodexTaskMonitor> removed;
-        IReadOnlyList<string> hosts;
-        lock (gate)
-        {
-            if (!remoteMonitoringEnabled) return;
-            hosts = configuredRemoteHosts.ToArray();
-            removed = [];
-            foreach (var host in remoteMonitors.Keys.ToArray())
-            {
-                if (remoteStatus.GetValueOrDefault(host).Ready)
-                {
-                    continue;
-                }
-                removed.Add(remoteMonitors[host]);
-                remoteMonitors.Remove(host);
-                remoteMonitorIds.Remove(host);
-                remoteStatus.Remove(host);
-                remoteReplays.Remove(host);
-            }
-        }
-        foreach (var monitor in removed) monitor.Dispose();
-
-        List<RemoteCodexTaskMonitor> added = [];
-        lock (gate)
-        {
-            foreach (var host in hosts)
-            {
-                if (remoteMonitors.ContainsKey(host)) continue;
-                var monitorId = Guid.NewGuid();
-                var monitor = CreateRemoteMonitor(host, monitorId);
-                remoteMonitors[host] = monitor;
-                remoteMonitorIds[host] = monitorId;
-                remoteStatus[host] = (false, $"正在连接远程任务主机 {host}");
-                added.Add(monitor);
-            }
-            PublishLocked();
-        }
-        foreach (var monitor in added) monitor.Start();
+        lock (gate) if (!remoteMonitoringEnabled) return;
+        _ = Task.Run(() => RefreshFollowedRemoteHosts(forceRestartUnavailable: true));
     }
 
     internal void SetQuota(QuotaWindow? five, QuotaWindow? seven, bool stale, string? message)
@@ -180,6 +140,11 @@ internal sealed class CodexSessionMonitor : IDisposable
     {
         while (!cancellation.IsCancellationRequested)
         {
+            if (remoteMonitoringEnabled && DateTimeOffset.UtcNow >= nextRemoteDiscovery)
+            {
+                nextRemoteDiscovery = DateTimeOffset.UtcNow.AddSeconds(5);
+                RefreshFollowedRemoteHosts(forceRestartUnavailable: false);
+            }
             try
             {
                 Scan();
@@ -398,12 +363,16 @@ internal sealed class CodexSessionMonitor : IDisposable
         long sevenTokens = 0;
         for (var offset = 0; offset < 7; offset++) sevenTokens += tokensByDay.GetValueOrDefault(today.AddDays(-offset));
         var remoteFailure = remoteStatus.Values.FirstOrDefault(value => !value.Ready);
-        var allSourcesReady = taskMonitorReady && remoteStatus.Values.All(value => value.Ready);
-        var monitorMessage = taskMonitorReady ? remoteFailure.Message : taskMonitorMessage;
+        var allSourcesReady = taskMonitorReady
+            && remoteDiscoveryMessage is null
+            && remoteStatus.Values.All(value => value.Ready);
+        var monitorMessage = taskMonitorReady
+            ? remoteDiscoveryMessage ?? remoteFailure.Message
+            : taskMonitorMessage;
         return new UsageSnapshot(
             fiveHour, sevenDay, todayTokens, sevenTokens, tokensByDay.Values.Sum(),
             reducer.Running, reducer.Results, progress.Completed, progress.Total, allSourcesReady, monitorMessage,
-            configuredRemoteHosts, remoteMonitoringEnabled, quotaStale, statusMessage);
+            activeRemoteHosts, remoteMonitoringEnabled, quotaStale, statusMessage);
     }
 
     private void PublishLocked() => SnapshotChanged?.Invoke(MakeSnapshot());
@@ -489,50 +458,59 @@ internal sealed class CodexSessionMonitor : IDisposable
             && totalElement.TryGetInt64(out current);
     }
 
-    private void ConfigureRemoteHosts(IReadOnlyList<string> hosts)
+    private void RefreshFollowedRemoteHosts(bool forceRestartUnavailable)
     {
+        if (Interlocked.Exchange(ref remoteDiscoveryInProgress, 1) != 0)
+        {
+            if (forceRestartUnavailable) Interlocked.Exchange(ref pendingForcedRemoteRefresh, 1);
+            return;
+        }
+        var discovered = ChatGPTSshHostDiscovery.TryDiscover(out var hosts);
+        var desired = new HashSet<string>(discovered ? hosts : [], StringComparer.OrdinalIgnoreCase);
         List<RemoteCodexTaskMonitor> removed = [];
-        lock (gate)
-        {
-            configuredRemoteHosts = hosts.ToArray();
-            var desired = new HashSet<string>(hosts, StringComparer.OrdinalIgnoreCase);
-            foreach (var host in remoteMonitors.Keys.Where(host => !desired.Contains(host)).ToArray())
-            {
-                removed.Add(remoteMonitors[host]);
-                remoteMonitors.Remove(host);
-                remoteMonitorIds.Remove(host);
-                remoteStatus.Remove(host);
-                remoteReplays.Remove(host);
-                reducer.RemoveSource(host);
-            }
-            remoteHostStore.SaveHosts(hosts);
-            stateStore.Save(reducer.Persisted());
-            stateDirty = false;
-            PublishLocked();
-        }
-        foreach (var monitor in removed) monitor.Dispose();
-        if (remoteMonitoringEnabled) SynchronizeRemoteMonitoring();
-    }
-
-    private void SynchronizeRemoteMonitoring()
-    {
         List<RemoteCodexTaskMonitor> added = [];
-        lock (gate)
+        try
         {
-            if (!remoteMonitoringEnabled) return;
-            foreach (var host in configuredRemoteHosts)
+            lock (gate)
             {
-                if (remoteMonitors.ContainsKey(host)) continue;
-                var monitorId = Guid.NewGuid();
-                var monitor = CreateRemoteMonitor(host, monitorId);
-                remoteMonitors[host] = monitor;
-                remoteMonitorIds[host] = monitorId;
-                remoteStatus[host] = (false, $"正在连接远程任务主机 {host}");
-                added.Add(monitor);
+                if (!remoteMonitoringEnabled) return;
+                activeRemoteHosts = desired.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+                remoteDiscoveryMessage = discovered
+                    ? null : "无法读取 ChatGPT 的 SSH 连接，远程监听已停止";
+                foreach (var host in remoteMonitors.Keys.ToArray())
+                {
+                    var unavailable = !remoteStatus.GetValueOrDefault(host).Ready;
+                    if (desired.Contains(host) && !(forceRestartUnavailable && unavailable)) continue;
+                    removed.Add(remoteMonitors[host]);
+                    remoteMonitors.Remove(host);
+                    remoteMonitorIds.Remove(host);
+                    remoteStatus.Remove(host);
+                    remoteReplays.Remove(host);
+                    reducer.RemoveSource(host);
+                }
+                foreach (var host in activeRemoteHosts)
+                {
+                    if (remoteMonitors.ContainsKey(host)) continue;
+                    var monitorId = Guid.NewGuid();
+                    var monitor = CreateRemoteMonitor(host, monitorId);
+                    remoteMonitors[host] = monitor;
+                    remoteMonitorIds[host] = monitorId;
+                    remoteStatus[host] = (false, $"正在连接 ChatGPT 远程主机 {host}");
+                    added.Add(monitor);
+                }
+                stateStore.Save(reducer.Persisted());
+                stateDirty = false;
+                PublishLocked();
             }
-            PublishLocked();
+            foreach (var monitor in removed) monitor.Dispose();
+            foreach (var monitor in added) monitor.Start();
         }
-        foreach (var monitor in added) monitor.Start();
+        finally
+        {
+            Interlocked.Exchange(ref remoteDiscoveryInProgress, 0);
+            if (Interlocked.Exchange(ref pendingForcedRemoteRefresh, 0) != 0)
+                _ = Task.Run(() => RefreshFollowedRemoteHosts(forceRestartUnavailable: true));
+        }
     }
 
     private RemoteCodexTaskMonitor CreateRemoteMonitor(string host, Guid monitorId)

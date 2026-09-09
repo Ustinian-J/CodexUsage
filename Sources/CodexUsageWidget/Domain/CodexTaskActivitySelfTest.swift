@@ -19,6 +19,40 @@ enum CodexTaskActivitySelfTest {
             projectName: "CodexS"
         )
 
+        let chatGPTProcessList = """
+          100   1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+          101 100 /Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper
+          102 101 /usr/bin/ssh -T -v -o BatchMode=yes example-remote sh -c command
+          200   1 /Applications/Visual Studio Code.app/Contents/MacOS/Electron
+          201 200 /usr/bin/ssh -T ignored-vscode command
+          300   1 /usr/bin/ssh -T orphaned-chatgpt-session command
+          103 100 /usr/bin/ssh -F /tmp/config -- second-remote command
+        """
+        let discoveredHosts = ChatGPTSSHHostDiscovery.hosts(
+            in: ChatGPTSSHHostDiscovery.parseProcessList(chatGPTProcessList)
+        )
+        expect(
+            discoveredHosts == ["example-remote", "second-remote"],
+            "remote discovery must follow only SSH descendants of the ChatGPT desktop app"
+        )
+        expect(
+            ChatGPTSSHHostDiscovery.sshHost(
+                in: "/usr/bin/ssh -T -o BatchMode=yes host_alias remote-command"
+            ) == "host_alias",
+            "SSH option values must not be mistaken for the host"
+        )
+        expect(
+            ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -T bad;host command") == nil,
+            "discovered SSH hosts must pass the remote-host injection boundary"
+        )
+        expect(
+            ChatGPTSSHHostDiscovery.hosts(
+                inSSHCommandList: "102 /usr/bin/ssh -T allowed-host command\n201 /usr/bin/ssh ignored-host command",
+                allowedProcessIDs: [102]
+            ) == ["allowed-host"],
+            "the second discovery phase must accept only SSH process IDs owned by ChatGPT"
+        )
+
         expect(CodexTaskTimestamp.date(unixTime: 0) == Date(timeIntervalSince1970: 0), "Unix epoch must be valid")
         expect(
             CodexTaskTimestamp.date(unixTime: CodexTaskTimestamp.maximumUnixTime) != nil,
