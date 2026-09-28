@@ -15,13 +15,14 @@ final class MultiRuntimeUsageReader {
     func load(
         statisticsPreference: StatisticsTimeZonePreference = .default,
         generation: UInt64 = 0,
+        includeQuota: Bool = true,
         allowedScopes: Set<RuntimeScope> = Set(RuntimeScope.allCases)
     ) -> MultiRuntimeUsageSnapshot {
         let context = RuntimeLoadContext.live(statisticsPreference: statisticsPreference)
         let runtimeSnapshots = registry.providers.filter { provider in
             allowedScopes.contains(provider.scope)
         }.map { provider in
-            provider.loadSnapshot(context: context)
+            includeQuota ? provider.loadSnapshot(context: context) : provider.loadStatisticsSnapshot(context: context)
         }
         let refreshedAt = Date()
         let aggregate = aggregator.aggregate(runtimeSnapshots, at: refreshedAt)

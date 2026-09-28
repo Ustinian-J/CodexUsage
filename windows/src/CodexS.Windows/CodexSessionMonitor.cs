@@ -42,10 +42,7 @@ internal sealed class CodexSessionMonitor : IDisposable
     private string? taskMonitorMessage = "正在读取 Codex 本地数据";
     private bool stateDirty;
     private bool stateFlushScheduled;
-    private QuotaWindow? fiveHour;
-    private QuotaWindow? sevenDay;
-    private bool quotaStale = true;
-    private string? statusMessage = "正在读取 Codex 本地数据";
+    private readonly QuotaState quota = new();
 
     internal event Action<UsageSnapshot>? SnapshotChanged;
     internal event Action<TaskResult>? CompletionArrived;
@@ -102,14 +99,11 @@ internal sealed class CodexSessionMonitor : IDisposable
         _ = Task.Run(() => RefreshFollowedRemoteHosts(forceRestartUnavailable: true));
     }
 
-    internal void SetQuota(QuotaWindow? five, QuotaWindow? seven, bool stale, string? message)
+    internal void SetQuota(QuotaWindow? five, QuotaWindow? seven, bool stale, string? message, string? accountContext)
     {
         lock (gate)
         {
-            fiveHour = five ?? fiveHour;
-            sevenDay = seven ?? sevenDay;
-            quotaStale = stale;
-            statusMessage = message;
+            quota.Update(five, seven, stale, message, accountContext, DateTimeOffset.UtcNow);
             PublishLocked();
         }
     }
@@ -357,6 +351,7 @@ internal sealed class CodexSessionMonitor : IDisposable
 
     private UsageSnapshot MakeSnapshot()
     {
+        quota.Expire(DateTimeOffset.UtcNow);
         var today = DateOnly.FromDateTime(DateTime.Now);
         var progress = reducer.Progress(today);
         var todayTokens = tokensByDay.GetValueOrDefault(today);
@@ -370,9 +365,9 @@ internal sealed class CodexSessionMonitor : IDisposable
             ? remoteDiscoveryMessage ?? remoteFailure.Message
             : taskMonitorMessage;
         return new UsageSnapshot(
-            fiveHour, sevenDay, todayTokens, sevenTokens, tokensByDay.Values.Sum(),
+            quota.FiveHour, quota.SevenDay, todayTokens, sevenTokens, tokensByDay.Values.Sum(),
             reducer.Running, reducer.Results, progress.Completed, progress.Total, allSourcesReady, monitorMessage,
-            activeRemoteHosts, remoteMonitoringEnabled, quotaStale, statusMessage);
+            activeRemoteHosts, remoteMonitoringEnabled, quota.Stale, quota.Message);
     }
 
     private void PublishLocked() => SnapshotChanged?.Invoke(MakeSnapshot());

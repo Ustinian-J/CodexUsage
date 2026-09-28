@@ -32,7 +32,7 @@ enum CodexTaskActivitySelfTest {
             in: ChatGPTSSHHostDiscovery.parseProcessList(chatGPTProcessList)
         )
         expect(
-            discoveredHosts == ["example-remote", "second-remote"],
+            Set(discoveredHosts.map(CodexRemoteHost.displayName)) == ["example-remote", "second-remote [/tmp/config]"],
             "remote discovery must follow only SSH descendants of the ChatGPT desktop app"
         )
         expect(
@@ -52,6 +52,48 @@ enum CodexTaskActivitySelfTest {
             ) == ["allowed-host"],
             "the second discovery phase must accept only SSH process IDs owned by ChatGPT"
         )
+
+        expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -l alice example-remote command") == "alice@example-remote", "SSH user must survive discovery")
+        expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -lalice example-remote command") == "alice@example-remote", "attached SSH user must survive discovery")
+        expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh alice@example-remote command") == "alice@example-remote", "explicit SSH user must survive discovery")
+        for option in ["-p 0", "-p65536", "-F relative/config", "-o Port=2222", "-oProxyCommand=command"] {
+            expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh \(option) example-remote command") == nil, "connection-changing SSH options must never be silently discarded")
+        }
+        let configuredConnection = ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -l alice -p2222 -F /tmp/custom-config example-remote command")
+        let decodedConnection = configuredConnection.flatMap(CodexSSHConnection.decode)
+        expect(decodedConnection?.destination == "alice@example-remote"
+            && decodedConnection?.port == 2222
+            && decodedConnection?.configurationPath == "/tmp/custom-config"
+            && decodedConnection?.optionArguments == ["-F", "/tmp/custom-config", "-p", "2222"],
+            "SSH user, port and config must survive structured discovery as separate argv")
+        expect(configuredConnection.flatMap(CodexRemoteHost.validated) == configuredConnection,
+            "structured SSH connection identifiers must round-trip validation")
+        expect(CodexSSHConnection.validated(destination: "host", configurationPath: "/tmp/config;bad") == nil,
+            "ambiguous config paths must fail validation")
+
+        for option in ["ServerAliveCountMax=12", "ServerAliveCountMax=3", "ServerAliveInterval=30", "ConnectTimeout=8", "TCPKeepAlive=yes"] {
+            expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -T -v -o BatchMode=yes -o \(option) example-remote command") == "example-remote",
+                   "valid transport settings must not make desktop SSH discovery unavailable")
+        }
+        expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -oServerAliveCountMax=12 example-remote command") == "example-remote",
+               "attached transport options must work")
+        for option in ["ServerAliveCountMax=-1", "ServerAliveCountMax=12;command", "ServerAliveCountMax=2147483648", "ServerAliveInterval=", "BatchMode=maybe"] {
+            expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -o \(option) example-remote command") == nil,
+                   "invalid transport values must remain rejected")
+        }
+        let localTask = CodexRunningTask(id: "local", turnID: "local", threadID: "local", title: "Local", projectName: nil, startedAt: base)
+        let remoteTask = CodexRunningTask(id: "remote", turnID: "remote", threadID: "remote", title: "Remote", projectName: nil, sourceLabel: "example-remote", startedAt: base)
+        let partial = CodexTaskActivitySnapshot(availability: .unavailable("SSH discovery failed"), runningTasks: [localTask, remoteTask], recentCompletions: [],
+            sourceCoverage: [CodexTaskSourceCoverage(sourceLabel: "本地", availability: .ready, lastSuccessfulReadAt: base),
+                             CodexTaskSourceCoverage(sourceLabel: "example-remote", availability: .unavailable("Disconnected"), lastSuccessfulReadAt: base)])
+        expect(partial.isPartiallyAvailable && partial.isSourceReady(nil) && !partial.isSourceReady("example-remote"),
+               "remote failure must not invalidate a healthy local source")
+        expect(partial.confirmedRunningCount == 1 && partial.showsRed && !partial.showsGreen,
+               "partial coverage must report confirmed local work without claiming all sources idle")
+
+        for host in ["-alice@example", "alice@-example", "alice@@example", "alice@example;bad", "例子"] {
+            expect(CodexRemoteHost.validated(host) == nil, "remote destinations must reject ambiguous or unsafe characters")
+        }
 
         expect(CodexTaskTimestamp.date(unixTime: 0) == Date(timeIntervalSince1970: 0), "Unix epoch must be valid")
         expect(
@@ -240,7 +282,7 @@ enum CodexTaskActivitySelfTest {
         let inactiveIdentities = livenessTracker.observe([closedObservation], at: base.addingTimeInterval(10))
         expect(
             inactiveIdentities == [startA.identity],
-            "two closed-file samples after the silence grace must identify an orphaned task"
+            "two closed-file samples after the silence grace must identify uncertainty"
         )
 
         livenessTracker.reset()
@@ -286,19 +328,19 @@ enum CodexTaskActivitySelfTest {
         var localOnlyCleanup = CodexTaskActivityReducer(persisted: .empty)
         _ = localOnlyCleanup.apply(startA, origin: .live)
         _ = localOnlyCleanup.apply(remoteStart, origin: .live)
-        expect(
-            localOnlyCleanup.removeRunningTasks(
-                localIdentities: [startA.identity, remoteStart.identity]
-            ),
-            "confirmed inactive local threads must clear local running state"
-        )
-        let remainingAfterCleanup = localOnlyCleanup.snapshot(availability: .ready)
-        expect(
-            remainingAfterCleanup.runningTasks.count == 1
-                && remainingAfterCleanup.runningTasks.first?.sourceLabel == "codex"
-                && remainingAfterCleanup.recentCompletions.isEmpty,
-            "local liveness cleanup must preserve remote tasks and must not create completions"
-        )
+        let sourceCoverage = CodexTaskSourceCoverage(sourceLabel: "本地", availability: .unavailable("无法读取"), lastSuccessfulReadAt: base)
+        let coverageSnapshot = localOnlyCleanup.snapshot(availability: .unavailable("无法读取"), sourceCoverage: [sourceCoverage])
+        expect(coverageSnapshot.sourceCoverage == [sourceCoverage],
+            "source coverage must preserve last successful read and current failure separately")
+        let unknownSnapshot = localOnlyCleanup.snapshot(availability: .unavailable("任务活动状态未知"))
+        expect(unknownSnapshot.runningTasks.count == 2
+            && unknownSnapshot.recentCompletions.isEmpty && !unknownSnapshot.showsGreen,
+            "unknown activity must preserve local and remote task evidence and never claim idle")
+        _ = localOnlyCleanup.apply(completeA, origin: .live)
+        let confirmedSnapshot = localOnlyCleanup.snapshot(availability: .ready)
+        expect(confirmedSnapshot.runningTasks.count == 1
+            && confirmedSnapshot.recentCompletions.count == 1,
+            "an explicit terminal event must resolve the preserved task")
 
         var consecutive = CodexTaskActivityReducer(persisted: .empty)
         _ = consecutive.apply(startA, origin: .live)

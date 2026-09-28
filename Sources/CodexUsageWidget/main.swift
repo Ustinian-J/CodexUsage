@@ -1,6 +1,7 @@
 import Cocoa
 import Carbon.HIToolbox
 import Combine
+import CryptoKit
 import SwiftUI
 
 struct RateWindow: Equatable {
@@ -24,6 +25,7 @@ struct AccountInfo: Equatable {
     let type: String
     let planType: String?
     let emailPresent: Bool
+    var identity: String? = nil
 }
 
 struct LocalThread: Identifiable, Equatable {
@@ -225,6 +227,9 @@ struct LocalUsage: Equatable {
     let projectBoard: ProjectBoard?
     let toolUsages: [ToolUsage]
     let skillUsages: [SkillUsage]
+    var hasDailyTokenEvidence: Bool = true
+    var parsedSourceCount: Int = 0
+    var totalSourceCount: Int = 0
 }
 
 enum TaskColumnKind: String, Equatable {
@@ -274,6 +279,7 @@ struct UsageSnapshot: Equatable {
     let local: LocalUsage?
     let taskBoard: TaskBoard?
     let messages: [String]
+    var quotaEvidence: QuotaEvidence? = nil
 
     static let empty = UsageSnapshot(
         refreshedAt: Date(),
@@ -303,14 +309,16 @@ struct UsageSnapshot: Equatable {
             cloudLifetimeTokens: cloudLifetimeTokens,
             local: local,
             taskBoard: taskBoard,
-            messages: messages
+            messages: messages,
+            quotaEvidence: quotaEvidence
         )
     }
 
     func replacingQuotaWindows(
         fiveHourQuota: RateWindow?,
         sevenDayQuota: RateWindow?,
-        quotaReadSucceeded: Bool
+        quotaReadSucceeded: Bool,
+        evidence: QuotaEvidence? = nil
     ) -> UsageSnapshot {
         UsageSnapshot(
             refreshedAt: refreshedAt,
@@ -324,8 +332,20 @@ struct UsageSnapshot: Equatable {
             cloudLifetimeTokens: cloudLifetimeTokens,
             local: local,
             taskBoard: taskBoard,
-            messages: messages
+            messages: messages,
+            quotaEvidence: evidence ?? quotaEvidence
         )
+    }
+}
+
+extension UsageSnapshot {
+    func replacingStatistics(_ local: LocalUsage?) -> UsageSnapshot {
+        var result = self
+        result = UsageSnapshot(refreshedAt: refreshedAt, account: account, limitId: limitId, limitName: limitName,
+            quotaReadSucceeded: quotaReadSucceeded, fiveHourQuota: fiveHourQuota, sevenDayQuota: sevenDayQuota,
+            credits: credits, cloudLifetimeTokens: cloudLifetimeTokens, local: local, taskBoard: taskBoard,
+            messages: messages, quotaEvidence: quotaEvidence)
+        return result
     }
 }
 
@@ -370,6 +390,11 @@ private struct SessionUsageCacheEntry: Codable {
     let deltas: [SessionUsageDelta]
     let toolCalls: [String: Int]
     let skillLoads: [SkillLoadEvent]
+    var previousTotal: TokenBreakdown? = nil
+    var processedByteCount: UInt64? = nil
+    var fileNumber: UInt64? = nil
+    var checkpointHash: Data? = nil
+    var hasParseErrors: Bool = false
 }
 
 private struct SessionUsageDiskCache: Codable {
@@ -515,6 +540,8 @@ private struct LocalAnalytics: Equatable, Codable {
     let recentProjects: [ProjectUsage]
     let toolUsages: [ToolUsage]
     let skillUsages: [SkillUsage]
+    var parsedSourceCount: Int = 0
+    var totalSourceCount: Int = 0
 }
 
 private struct LocalAnalyticsCacheEntry: Codable {
@@ -535,7 +562,8 @@ enum VisualEnergyMode: Equatable {
 
 final class UsageStore: ObservableObject {
     private struct StatisticsSnapshotCacheEntry {
-        let snapshot: MultiRuntimeUsageSnapshot
+        let statistics: [RuntimeScope: LocalUsage]
+        let identity: StatisticsIdentity
         let cachedAt: Date
     }
 
@@ -544,12 +572,17 @@ final class UsageStore: ObservableObject {
     @Published var runtimeSnapshots: [RuntimeUsageSnapshot] = []
     @Published var selectedRuntimeScope: RuntimeScope = .codex
     @Published var visibleRuntimeScopes: [RuntimeScope] = RuntimeScope.allCases
+    @Published private(set) var taskMonitorMessage: String?
+    @Published var isRefreshingQuota = false
     @Published var isRefreshing = false
     @Published private(set) var statisticsPreference = StatisticsTimeZonePreferenceStore.load()
     @Published private(set) var statisticsTransitionMessage: String?
     @Published private(set) var isSwitchingStatisticsTimeZone = false
     @Published private(set) var visualEnergyMode: VisualEnergyMode = .suspended
 
+    private var taskActivity: CodexTaskActivitySnapshot = .starting
+    private var quotaTimer: Timer?
+    private var pendingQuotaRefresh = false
     private var fullTimer: Timer?
     private var taskBoardTimer: Timer?
     private var statisticsRolloverTimer: Timer?
@@ -571,6 +604,19 @@ final class UsageStore: ObservableObject {
     private let taskBoardRefreshInterval: TimeInterval = 60
     private let foregroundFullRefreshInterval: TimeInterval = 5 * 60
     private let backgroundFullRefreshInterval: TimeInterval = 15 * 60
+
+    private let quotaLoader: () -> UsageSnapshot
+    private let statisticsLoader: (StatisticsTimeZonePreference, UInt64, Set<RuntimeScope>) -> MultiRuntimeUsageSnapshot
+
+    init(
+        quotaLoader: @escaping () -> UsageSnapshot = { CodexUsageReader().loadQuota(context: .live()) },
+        statisticsLoader: @escaping (StatisticsTimeZonePreference, UInt64, Set<RuntimeScope>) -> MultiRuntimeUsageSnapshot = { preference, generation, scopes in
+            MultiRuntimeUsageReader().load(statisticsPreference: preference, generation: generation, includeQuota: false, allowedScopes: scopes)
+        }
+    ) {
+        self.quotaLoader = quotaLoader
+        self.statisticsLoader = statisticsLoader
+    }
 
     var runtimeSummaries: [RuntimeMenuSummary] {
         RuntimeScope.allCases.compactMap { scope in
@@ -617,12 +663,14 @@ final class UsageStore: ObservableObject {
         updateVisualEnergyMode()
         scheduleStatisticsRollover()
         scheduleFullRefreshTimer()
+        scheduleQuotaTimer()
         updateTaskBoardPollingState(refreshImmediately: false)
     }
 
     func stop() {
         hasStarted = false
         fullTimer?.invalidate()
+        quotaTimer?.invalidate()
         taskBoardTimer?.invalidate()
         statisticsRolloverTimer?.invalidate()
         statisticsFeedbackTimer?.invalidate()
@@ -642,8 +690,9 @@ final class UsageStore: ObservableObject {
     }
 
     func refresh(queueIfBusy: Bool = false) {
+        refreshQuota()
         guard !isRefreshing, !isRefreshingTaskBoard else {
-            if queueIfBusy || isRefreshingTaskBoard {
+            if queueIfBusy || isRefreshing || isRefreshingTaskBoard {
                 hasPendingRefresh = true
             }
             return
@@ -655,11 +704,7 @@ final class UsageStore: ObservableObject {
         isRefreshing = true
 
         DispatchQueue.global(qos: .utility).async {
-            let multiSnapshot = MultiRuntimeUsageReader().load(
-                statisticsPreference: preference,
-                generation: generation,
-                allowedScopes: allowedScopes
-            )
+            let multiSnapshot = self.statisticsLoader(preference, generation, allowedScopes)
             DispatchQueue.main.async {
                 if generation == self.refreshGeneration,
                    multiSnapshot.statisticsIdentity.preference == self.statisticsPreference {
@@ -678,6 +723,45 @@ final class UsageStore: ObservableObject {
                 }
             }
         }
+    }
+
+    func refreshQuota() {
+        guard visibleRuntimeScopes.contains(.codex) else { return }
+        guard !isRefreshingQuota else { pendingQuotaRefresh = true; return }
+        isRefreshingQuota = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let quota = self.quotaLoader()
+            DispatchQueue.main.async {
+                let previous = self.runtimeSnapshot(for: .codex)
+                let status: RuntimeMenuStatus = quota.quotaReadSucceeded ? .available : quota.fiveHourQuota != nil || quota.sevenDayQuota != nil ? .stale : .unavailable
+                let incoming = RuntimeUsageSnapshot(scope: .codex, snapshot: quota,
+                    status: status, quotaSourceLabel: quota.quotaEvidence?.label ?? "当前额度未确认", usageSourceLabel: "Codex local state")
+                let reconciled = RuntimeQuotaContinuity.reconcile(previous: previous.map { [$0] } ?? [], incoming: [incoming])[0]
+                let merged = RuntimeUsageSnapshot(scope: .codex,
+                    snapshot: reconciled.snapshot.replacingStatistics(previous?.snapshot.local).replacingTaskBoard(previous?.snapshot.taskBoard),
+                    status: reconciled.status, quotaSourceLabel: reconciled.quotaSourceLabel, usageSourceLabel: reconciled.usageSourceLabel)
+                if self.visibleRuntimeScopes.contains(.codex) {
+                    self.runtimeSnapshots.removeAll { $0.scope == .codex }
+                    self.runtimeSnapshots.append(merged)
+                    self.multiRuntimeSnapshot = MultiRuntimeUsageSnapshot(refreshedAt: self.multiRuntimeSnapshot.refreshedAt,
+                        runtimes: self.runtimeSnapshots, aggregate: AgentUsageAggregator().aggregate(self.runtimeSnapshots, at: Date()),
+                        statisticsIdentity: self.multiRuntimeSnapshot.statisticsIdentity)
+                    self.snapshot = self.multiRuntimeSnapshot.displaySnapshot(for: self.selectedRuntimeScope)
+                }
+                self.isRefreshingQuota = false
+                if self.pendingQuotaRefresh { self.pendingQuotaRefresh = false; self.refreshQuota() }
+            }
+        }
+    }
+
+    private func scheduleQuotaTimer() {
+        quotaTimer?.invalidate()
+        guard hasStarted else { return }
+        let interval: TimeInterval = isMainWindowActive || taskActivity.runningCount > 0 ? 60 : 180
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.refreshQuota() }
+        timer.tolerance = interval * 0.1
+        RunLoop.main.add(timer, forMode: .common)
+        quotaTimer = timer
     }
 
     func updateStatisticsTimeZone(_ preference: StatisticsTimeZonePreference) {
@@ -728,7 +812,12 @@ final class UsageStore: ObservableObject {
         }
         statisticsSnapshotCacheOrder.removeAll { $0 == key }
         statisticsSnapshotCacheOrder.append(key)
-        return entry.snapshot
+        let runtimes = runtimeSnapshots.map { runtime in
+            RuntimeUsageSnapshot(scope: runtime.scope, snapshot: runtime.snapshot.replacingStatistics(entry.statistics[runtime.scope]),
+                status: runtime.status, quotaSourceLabel: runtime.quotaSourceLabel, usageSourceLabel: runtime.usageSourceLabel)
+        }
+        return MultiRuntimeUsageSnapshot(refreshedAt: multiRuntimeSnapshot.refreshedAt, runtimes: runtimes,
+            aggregate: AgentUsageAggregator().aggregate(runtimes, at: Date()), statisticsIdentity: entry.identity)
     }
 
     private func cacheStatisticsSnapshot(_ snapshot: MultiRuntimeUsageSnapshot) {
@@ -736,7 +825,7 @@ final class UsageStore: ObservableObject {
             resolvedIdentifier: snapshot.statisticsIdentity.resolvedIdentifier,
             scopes: snapshot.runtimes.map(\.scope)
         )
-        statisticsSnapshotCache[key] = StatisticsSnapshotCacheEntry(snapshot: snapshot, cachedAt: Date())
+        statisticsSnapshotCache[key] = StatisticsSnapshotCacheEntry(statistics: Dictionary(uniqueKeysWithValues: snapshot.runtimes.compactMap { runtime in runtime.snapshot.local.map { (runtime.scope, $0) } }), identity: snapshot.statisticsIdentity, cachedAt: Date())
         statisticsSnapshotCacheOrder.removeAll { $0 == key }
         statisticsSnapshotCacheOrder.append(key)
         while statisticsSnapshotCacheOrder.count > statisticsSnapshotCacheLimit {
@@ -813,6 +902,8 @@ final class UsageStore: ObservableObject {
     func setMainWindowActive(_ isActive: Bool) {
         guard isMainWindowActive != isActive else { return }
         isMainWindowActive = isActive
+        scheduleQuotaTimer()
+        if isActive { refreshQuota() }
         updateVisualEnergyMode()
         guard hasStarted else { return }
         scheduleFullRefreshTimer()
@@ -922,7 +1013,16 @@ final class UsageStore: ObservableObject {
     private func apply(_ multiSnapshot: MultiRuntimeUsageSnapshot) {
         let reconciledRuntimes = RuntimeQuotaContinuity.reconcile(
             previous: runtimeSnapshots,
-            incoming: multiSnapshot.runtimes
+            incoming: multiSnapshot.runtimes.map { incoming in
+                guard let current = runtimeSnapshot(for: incoming.scope) else { return incoming }
+                if incoming.scope == .codex {
+                    return RuntimeUsageSnapshot(scope: .codex,
+                        snapshot: current.snapshot.replacingStatistics(incoming.snapshot.local),
+                        status: current.status, quotaSourceLabel: current.quotaSourceLabel,
+                        usageSourceLabel: incoming.usageSourceLabel)
+                }
+                return incoming
+            }
         )
         let reconciledSnapshot = MultiRuntimeUsageSnapshot(
             refreshedAt: multiSnapshot.refreshedAt,
@@ -938,9 +1038,125 @@ final class UsageStore: ObservableObject {
         runtimeSnapshots = reconciledRuntimes
         selectedRuntimeScope = nextScope
         snapshot = reconciledSnapshot.displaySnapshot(for: nextScope)
+        applyTaskBoard(multiSnapshot.runtime(for: .codex)?.snapshot.taskBoard, for: .codex)
+    }
+
+    static func runDataIntegritySelfTest() -> Bool {
+        let store = UsageStore()
+        let now = Date()
+        func runtime(used: Double) -> RuntimeUsageSnapshot {
+            let snapshot = UsageSnapshot.empty.replacingQuotaWindows(
+                fiveHourQuota: RateWindow(usedPercent: used, windowDurationMins: 300, resetsAt: now.addingTimeInterval(3600)),
+                sevenDayQuota: nil, quotaReadSucceeded: true)
+            return RuntimeUsageSnapshot(scope: .codex, snapshot: snapshot, status: .available,
+                quotaSourceLabel: "test", usageSourceLabel: "test")
+        }
+        let identity = StatisticsIdentity.empty(now: now)
+        let old = MultiRuntimeUsageSnapshot(refreshedAt: now, runtimes: [runtime(used: 1)], aggregate: .empty, statisticsIdentity: identity)
+        store.cacheStatisticsSnapshot(old)
+        store.runtimeSnapshots = [runtime(used: 11)]
+        let key = runtimeScopedStatisticsCacheKey(resolvedIdentifier: identity.resolvedIdentifier, scopes: [.codex])
+        guard store.validCachedStatisticsSnapshot(forKey: key)?.runtime(for: .codex)?.snapshot.fiveHourQuota?.remainingPercent == 89 else {
+            print("data integrity self-test failed: time zone cache rolled quota back")
+            return false
+        }
+        let completion = CodexTaskCompletion(id: "turn", turnID: "turn", threadID: "thread", title: "completed but unarchived",
+            projectName: nil, completedAt: now, outcome: .completed, readAt: nil)
+        store.taskActivity = CodexTaskActivitySnapshot(availability: .ready, runningTasks: [], recentCompletions: [completion])
+        let board = store.eventTaskBoard(nil)
+        guard board.columns.first(where: { $0.id == .active })?.count == 0,
+              board.columns.first(where: { $0.id == .done })?.count == 1 else {
+            print("data integrity self-test failed: completed turn remains running")
+            return false
+        }
+        let localTask = CodexRunningTask(id: "local-running", turnID: "local", threadID: "local", title: "Local task", projectName: nil, startedAt: now)
+        let remoteTask = CodexRunningTask(id: "remote-running", turnID: "remote", threadID: "remote", title: "Remote task", projectName: nil, sourceLabel: "remote", startedAt: now)
+        store.taskActivity = CodexTaskActivitySnapshot(availability: .unavailable("Remote discovery failed"), runningTasks: [localTask, remoteTask], recentCompletions: [],
+            sourceCoverage: [CodexTaskSourceCoverage(sourceLabel: "本地", availability: .ready, lastSuccessfulReadAt: now),
+                             CodexTaskSourceCoverage(sourceLabel: "remote", availability: .unavailable("Disconnected"), lastSuccessfulReadAt: now)])
+        let partialBoard = store.eventTaskBoard(nil)
+        guard partialBoard.columns.first(where: { $0.id == .active })?.count == 1,
+              partialBoard.columns.first(where: { $0.id == .pending })?.count == 1 else {
+            print("data integrity self-test failed: remote failure hid confirmed local tasks")
+            return false
+        }
+        let countLock = NSLock()
+        var quotaQueries = 0
+        let independent = UsageStore(quotaLoader: {
+            countLock.lock(); quotaQueries += 1; countLock.unlock()
+            Thread.sleep(forTimeInterval: 0.05)
+            return runtime(used: 11).snapshot
+        }, statisticsLoader: { preference, generation, _ in
+            Thread.sleep(forTimeInterval: 1.5)
+            return MultiRuntimeUsageSnapshot(refreshedAt: now, runtimes: old.runtimes, aggregate: .empty,
+                statisticsIdentity: StatisticsIdentity(preference: preference,
+                    resolvedIdentifier: StatisticsContext(preference: preference, now: now).resolvedIdentifier,
+                    generation: generation, now: now))
+        })
+        independent.refresh()
+        for _ in 0..<10 { independent.refreshQuota() }
+        let deadline = Date().addingTimeInterval(1)
+        while independent.isRefreshingQuota && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        countLock.lock(); let queries = quotaQueries; countLock.unlock()
+        guard queries == 2, independent.isRefreshing,
+              independent.snapshot.fiveHourQuota?.remainingPercent == 89 else {
+            print("data integrity self-test failed: slow statistics blocked quota or manual refresh was not bounded")
+            return false
+        }
+        let statisticsDeadline = Date().addingTimeInterval(3)
+        while independent.isRefreshing && Date() < statisticsDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        guard !independent.isRefreshing, independent.snapshot.fiveHourQuota?.remainingPercent == 89 else {
+            print("data integrity self-test failed: statistics completion rolled quota back")
+            return false
+        }
+        print("data integrity store self-test passed")
+        return true
+    }
+
+    func updateTaskActivity(_ activity: CodexTaskActivitySnapshot) {
+        let wasRunning = taskActivity.runningCount > 0
+        taskActivity = activity
+        switch activity.availability {
+        case .ready: taskMonitorMessage = nil
+        case let .unavailable(message): taskMonitorMessage = message
+        default: taskMonitorMessage = "任务监控连接中，状态尚未确认"
+        }
+        if wasRunning != (activity.runningCount > 0) { scheduleQuotaTimer() }
+        applyTaskBoard(runtimeSnapshot(for: .codex)?.snapshot.taskBoard, for: .codex)
+    }
+
+    private func eventTaskBoard(_ fallback: TaskBoard?) -> TaskBoard {
+        let healthy = taskActivity.availability == .ready
+        let running = taskActivity.runningTasks.map { task in
+            let sourceReady = taskActivity.isSourceReady(task.sourceLabel)
+            return TaskItem(id: task.id, code: "COD-" + task.threadID.suffix(4).uppercased(), title: task.title,
+                detail: [task.projectName, task.sourceLabel].compactMap { $0 }.joined(separator: " · "),
+                chip: sourceReady ? "Running" : "Unknown", updatedAt: task.startedAt, tokens: 0, kind: sourceReady ? .active : .pending)
+        }
+        let completions = taskActivity.recentCompletions.map { task in
+            TaskItem(id: task.id, code: "COD-" + task.threadID.suffix(4).uppercased(), title: task.title,
+                detail: [task.projectName, task.sourceLabel].compactMap { $0 }.joined(separator: " · "),
+                chip: task.outcome == .completed ? "Review" : "Interrupted", updatedAt: task.completedAt, tokens: 0,
+                kind: task.outcome == .completed ? .done : .pending)
+        }
+        let scheduled = fallback?.columns.first { $0.id == .scheduled }?.items ?? []
+        let active = running.filter { $0.kind == .active }
+        let pending = running.filter { $0.kind == .pending } + completions.filter { $0.kind == .pending }
+        let done = completions.filter { $0.kind == .done }
+        return TaskBoard(refreshedAt: Date(), columns: [
+            TaskColumn(id: .active, title: "正在运行", count: active.count, items: active),
+            TaskColumn(id: .pending, title: healthy ? "中断 / 待处理" : "状态未知 / 中断", count: pending.count, items: pending),
+            TaskColumn(id: .scheduled, title: "定时", count: scheduled.count, items: scheduled),
+            TaskColumn(id: .done, title: "执行结束 · 待检查", count: done.count, items: done)
+        ])
     }
 
     private func applyTaskBoard(_ taskBoard: TaskBoard?, for scope: RuntimeScope) {
+        let taskBoard = scope == .codex ? eventTaskBoard(taskBoard) : taskBoard
         guard visibleRuntimeScopes.contains(scope) else { return }
         guard let index = runtimeSnapshots.firstIndex(where: { $0.scope == scope }) else {
             guard snapshot.taskBoard?.columns != taskBoard?.columns else { return }
@@ -965,8 +1181,9 @@ final class UsageStore: ObservableObject {
 
 final class CodexUsageReader {
     private let fileManager = FileManager.default
-    private let localAnalyticsCacheVersion = 7
-    private let sessionUsageCacheVersion = 4
+    private var environment = CodexEnvironmentResolver(context: .live())
+    private let localAnalyticsCacheVersion = 8
+    private let sessionUsageCacheVersion = 6
     private static let sessionUsageCacheLimit = 1_024
     private static let persistentSessionUsageCacheWriteInterval: TimeInterval = 15 * 60
     private static var sessionUsageCache: [String: SessionUsageCacheEntry] = [:]
@@ -976,9 +1193,10 @@ final class CodexUsageReader {
     private static var lastPersistentSessionUsageCacheWriteAt: Date?
     private static var localAnalyticsCache: LocalAnalyticsCacheEntry?
 
-    func load(context: RuntimeLoadContext) -> UsageSnapshot {
+    func load(context: RuntimeLoadContext, includeQuota: Bool = true) -> UsageSnapshot {
         var messages: [String] = []
-        let appServer = readAppServer(messages: &messages)
+        environment = CodexEnvironmentResolver(context: context)
+        let appServer = includeQuota ? readAppServer(messages: &messages) : AppServerSnapshot()
         let local = readLocalUsage(context: context, messages: &messages)
         let taskBoard = readTaskBoard(context: context, messages: &messages)
 
@@ -994,11 +1212,45 @@ final class CodexUsageReader {
             cloudLifetimeTokens: appServer.cloudLifetimeTokens,
             local: local,
             taskBoard: taskBoard,
-            messages: messages
+            messages: messages,
+            quotaEvidence: appServer.evidence
         )
     }
 
+    static func runProtocolFixturesSelfTest() -> Bool {
+        let url = Bundle.main.url(forResource: "codex-rate-limits", withExtension: "json")
+            ?? URL(fileURLWithPath: "tests/fixtures/codex-rate-limits.json")
+        guard let data = try? Data(contentsOf: url),
+              let fixtures = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return false }
+        let reader = CodexUsageReader()
+        for fixture in fixtures {
+            guard let response = fixture["response"] as? [String: Any], let valid = fixture["valid"] as? Bool else { return false }
+            var result = AppServerSnapshot()
+            reader.parseRateLimits(response, into: &result)
+            let five = (fixture["fiveRemaining"] as? NSNumber)?.doubleValue
+            let seven = (fixture["sevenRemaining"] as? NSNumber)?.doubleValue
+            guard result.quotaReadSucceeded == valid, result.fiveHourQuota?.remainingPercent == five,
+                  result.sevenDayQuota?.remainingPercent == seven else {
+                print("shared quota fixture failed: \(fixture["name"] ?? "unknown")")
+                return false
+            }
+        }
+        print("shared quota protocol fixtures passed (\(fixtures.count))")
+        return true
+    }
+
+    func loadQuota(context: RuntimeLoadContext) -> UsageSnapshot {
+        environment = CodexEnvironmentResolver(context: context)
+        var messages: [String] = []
+        let result = readAppServer(messages: &messages)
+        return UsageSnapshot(refreshedAt: Date(), account: result.account, limitId: result.limitId, limitName: result.limitName,
+                             quotaReadSucceeded: result.quotaReadSucceeded, fiveHourQuota: result.fiveHourQuota,
+                             sevenDayQuota: result.sevenDayQuota, credits: result.credits, cloudLifetimeTokens: result.cloudLifetimeTokens,
+                             local: nil, taskBoard: nil, messages: messages, quotaEvidence: result.evidence)
+    }
+
     func loadTaskBoard(context: RuntimeLoadContext) -> TaskBoard? {
+        environment = CodexEnvironmentResolver(context: context)
         var messages: [String] = []
         return readTaskBoard(context: context, messages: &messages)
     }
@@ -1007,6 +1259,7 @@ final class CodexUsageReader {
         var account: AccountInfo?
         var limitId: String?
         var limitName: String?
+        var evidence: QuotaEvidence?
         var quotaReadSucceeded = false
         var fiveHourQuota: RateWindow?
         var sevenDayQuota: RateWindow?
@@ -1016,6 +1269,7 @@ final class CodexUsageReader {
     }
 
     private func readAppServer(messages: inout [String]) -> AppServerSnapshot {
+        let queriedAt = Date()
         guard let codexPath = resolveCodexExecutablePath() else {
             messages.append("未找到 codex 可执行文件")
             return AppServerSnapshot()
@@ -1023,6 +1277,10 @@ final class CodexUsageReader {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codexPath)
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment["CODEX_HOME"] = environment.dataDirectory.path
+        process.environment = processEnvironment
+        messages.append("Codex 环境：\(codexPath) · \(environment.executableVersion()) · \(environment.dataDirectory.path)")
         process.arguments = [
             "app-server",
             "--disable", "plugins",
@@ -1045,10 +1303,16 @@ final class CodexUsageReader {
             return AppServerSnapshot()
         }
 
+        let stderrCollector = CodexBoundedPipeCollector(maximumBytes: 16 * 1024)
+        stderrCollector.start(error.fileHandleForReading)
+
+        // A server may exit between initialize and the following writes.
+        // Suppress SIGPIPE for this descriptor and use throwing writes.
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         func writeMessage(_ request: [String: Any]) {
-            if let data = try? JSONSerialization.data(withJSONObject: request) {
-                input.fileHandleForWriting.write(data)
-                input.fileHandleForWriting.write(Data("\n".utf8))
+            if var data = try? JSONSerialization.data(withJSONObject: request) {
+                data.append(10)
+                try? input.fileHandleForWriting.write(contentsOf: data)
             }
         }
 
@@ -1059,6 +1323,7 @@ final class CodexUsageReader {
         var buffer = Data()
         var snapshot = AppServerSnapshot()
         var completed = Set<Int>()
+        var receivedAt: Date?
         var sentAccountRequests = false
         var appServerMessages: [String] = []
 
@@ -1066,7 +1331,7 @@ final class CodexUsageReader {
             lock.lock()
             let inserted = completed.insert(id).inserted
             lock.unlock()
-            if inserted {
+            if inserted && [2, 3].contains(id) {
                 responseGroup.leave()
             }
         }
@@ -1077,26 +1342,28 @@ final class CodexUsageReader {
                 let id = object["id"] as? Int
             else { return }
 
+            if object["error"] != nil {
+                lock.lock()
+                appServerMessages.append("app-server 请求失败（阶段：\(id == 1 ? "initialize" : id == 2 ? "account/read" : "account/rateLimits/read")）")
+                lock.unlock()
+                if id == 1 { markComplete(2); markComplete(3) } else { markComplete(id) }
+                return
+            }
+
             if id == 1 {
+                guard object["result"] != nil else {
+                    markComplete(2); markComplete(3)
+                    return
+                }
                 lock.lock()
                 let shouldSend = !sentAccountRequests
                 sentAccountRequests = true
                 lock.unlock()
-
                 if shouldSend {
                     writeMessage(["method": "initialized"])
                     writeMessage(["id": 2, "method": "account/read", "params": ["refreshToken": false]])
                     writeMessage(["id": 3, "method": "account/rateLimits/read"])
                 }
-                return
-            }
-
-            if let errorObject = object["error"] as? [String: Any] {
-                let message = errorObject["message"] as? String ?? "未知错误"
-                lock.lock()
-                appServerMessages.append("app-server \(id): \(message)")
-                lock.unlock()
-                markComplete(id)
                 return
             }
 
@@ -1111,6 +1378,7 @@ final class CodexUsageReader {
                 snapshot.account = parseAccount(result)
             case 3:
                 parseRateLimits(result, into: &snapshot)
+                if snapshot.quotaReadSucceeded { receivedAt = Date() }
             default:
                 break
             }
@@ -1123,7 +1391,10 @@ final class CodexUsageReader {
 
         output.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                markComplete(2); markComplete(3)
+                return
+            }
 
             lock.lock()
             buffer.append(data)
@@ -1132,7 +1403,10 @@ final class CodexUsageReader {
                 lines.append(buffer.subdata(in: buffer.startIndex..<newline))
                 buffer.removeSubrange(buffer.startIndex...newline)
             }
+            let overflow = buffer.count > 2 * 1024 * 1024
+            if overflow { buffer.removeAll() }
             lock.unlock()
+            if overflow { markComplete(2); markComplete(3) }
 
             for line in lines where !line.isEmpty {
                 parseLine(line)
@@ -1164,12 +1438,13 @@ final class CodexUsageReader {
         }
 
         output.fileHandleForReading.readabilityHandler = nil
+        stderrCollector.cancel()
         try? input.fileHandleForWriting.close()
         if process.isRunning {
             process.terminate()
-            DispatchQueue.global(qos: .utility).async {
-                process.waitUntilExit()
-            }
+            let deadline = Date().addingTimeInterval(1)
+            while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
 
         lock.lock()
@@ -1177,12 +1452,21 @@ final class CodexUsageReader {
         var finalAppServerMessages = appServerMessages
         lock.unlock()
 
+        finalSnapshot.evidence = QuotaEvidence(
+            source: finalSnapshot.quotaReadSucceeded ? .rpc : .unknown,
+            queriedAt: queriedAt, receivedAt: receivedAt,
+            observedAt: nil, lastOfficialSuccessAt: receivedAt,
+            environment: environment.dataDirectory.path,
+            accountIdentity: finalSnapshot.account?.identity,
+            failure: finalAppServerMessages.first
+        )
         if !finalSnapshot.quotaReadSucceeded,
            var localSnapshot = readLatestLocalRateLimitSnapshot() {
-            localSnapshot.account = finalSnapshot.account ?? localSnapshot.account
+            // Historical logs cannot prove which account produced their quota.
+            localSnapshot.account = finalSnapshot.account
+            localSnapshot.evidence?.failure = finalAppServerMessages.first ?? "官方额度未确认"
             finalSnapshot = localSnapshot
-            finalAppServerMessages.removeAll { $0.hasPrefix("app-server 响应超时") }
-            finalAppServerMessages.append("账户接口未及时响应，已使用最近的本地会话额度")
+            finalAppServerMessages.append("本地历史额度 · 账户一致性未验证；本次查询未成功")
         }
 
         messages.append(contentsOf: finalAppServerMessages)
@@ -1193,8 +1477,8 @@ final class CodexUsageReader {
 
     private func readLatestLocalRateLimitSnapshot() -> AppServerSnapshot? {
         guard let dbPath = firstExistingPath([
-            NSHomeDirectory() + "/.codex/state_5.sqlite",
-            NSHomeDirectory() + "/.codex/sqlite/state_5.sqlite"
+            environment.dataDirectory.appendingPathComponent("state_5.sqlite").path,
+            environment.dataDirectory.appendingPathComponent("sqlite/state_5.sqlite").path
         ]), let sqlitePath = firstExistingPath([
             "/usr/bin/sqlite3",
             "/opt/homebrew/bin/sqlite3",
@@ -1208,14 +1492,17 @@ final class CodexUsageReader {
         ORDER BY updated_at DESC
         LIMIT 24;
         """
-        let codexRoot = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".codex", isDirectory: true)
-            .standardizedFileURL.path + "/"
+        let codexRoot = environment.dataDirectory
+            .resolvingSymlinksInPath().standardizedFileURL.path + "/"
 
+        var newest: AppServerSnapshot?
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
         for row in runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: query) {
             guard let path = row["rolloutPath"] as? String else { continue }
             let url = URL(fileURLWithPath: path).standardizedFileURL
-            guard url.path.hasPrefix(codexRoot),
+            guard url.resolvingSymlinksInPath().path.hasPrefix(codexRoot),
                   let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
                   values.isRegularFile == true,
                   values.isSymbolicLink != true,
@@ -1255,7 +1542,14 @@ final class CodexUsageReader {
                 }
                 result.limitId = "codex"
                 result.limitName = limits["limit_name"] as? String
-                result.quotaReadSucceeded = true
+                guard let timestamp = object["timestamp"] as? String,
+                      let observedAt = fractional.date(from: timestamp) ?? plain.date(from: timestamp),
+                      Date().timeIntervalSince(observedAt) >= -60,
+                      Date().timeIntervalSince(observedAt) <= QuotaEvidence.maximumHistoricalAge,
+                      [normalized.fiveHour, normalized.sevenDay].compactMap({ $0 }).allSatisfy({ $0.resetsAt.map { $0 > Date() } ?? false })
+                else { continue }
+                result.quotaReadSucceeded = false
+                result.evidence = QuotaEvidence(source: .localHistory, queriedAt: Date(), receivedAt: nil, observedAt: observedAt, lastOfficialSuccessAt: nil, environment: environment.dataDirectory.path, accountIdentity: nil, failure: nil)
                 result.fiveHourQuota = normalized.fiveHour
                 result.sevenDayQuota = normalized.sevenDay
                 if let credits = limits["credits"] as? [String: Any] {
@@ -1266,10 +1560,10 @@ final class CodexUsageReader {
                         resetCredits: nil
                     )
                 }
-                return result
+                if newest?.evidence?.observedAt ?? .distantPast < observedAt { newest = result }
             }
         }
-        return nil
+        return newest
     }
 
     private func parseLocalRateWindow(_ value: Any?) -> RateWindow? {
@@ -1290,15 +1584,17 @@ final class CodexUsageReader {
         return AccountInfo(
             type: type,
             planType: account["planType"] as? String,
-            emailPresent: account["email"] != nil && !(account["email"] is NSNull)
+            emailPresent: account["email"] != nil && !(account["email"] is NSNull),
+            identity: (account["id"] as? String ?? account["email"] as? String).map { value in
+                SHA256.hash(data: Data((type + ":" + value).utf8)).map { String(format: "%02x", $0) }.joined()
+            }
         )
     }
 
     private func parseRateLimits(_ result: [String: Any], into snapshot: inout AppServerSnapshot) {
         let selected: [String: Any]?
-        if let byId = result["rateLimitsByLimitId"] as? [String: Any],
-           let codex = byId["codex"] as? [String: Any] {
-            selected = codex
+        if result.keys.contains("rateLimitsByLimitId") {
+            selected = (result["rateLimitsByLimitId"] as? [String: Any])?["codex"] as? [String: Any]
         } else {
             selected = result["rateLimits"] as? [String: Any]
         }
@@ -1350,21 +1646,22 @@ final class CodexUsageReader {
 
     private func parseRateWindow(_ value: Any?) -> RateWindow? {
         guard let object = value as? [String: Any],
-              let used = doubleValue(object["usedPercent"])
-        else { return nil }
-
-        let resetDate: Date?
-        if let timestamp = doubleValue(object["resetsAt"]) {
-            resetDate = Date(timeIntervalSince1970: timestamp)
-        } else {
-            resetDate = nil
-        }
-
-        return RateWindow(
-            usedPercent: used,
-            windowDurationMins: intValue(object["windowDurationMins"]),
-            resetsAt: resetDate
-        )
+              let number = object["usedPercent"] as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return nil }
+        let duration: Int?
+        if let raw = object["windowDurationMins"], !(raw is NSNull) {
+            guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, number.doubleValue == Double(number.intValue) else { return nil }
+            duration = number.intValue
+        } else { duration = nil }
+        let reset: Date?
+        if let raw = object["resetsAt"], !(raw is NSNull) {
+            guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, number.doubleValue >= -62_135_596_800,
+                  number.doubleValue <= 253_402_300_799 else { return nil }
+            reset = Date(timeIntervalSince1970: number.doubleValue)
+        } else { reset = nil }
+        return RateWindow(usedPercent: number.doubleValue, windowDurationMins: duration, resetsAt: reset)
     }
 
     private func rateLimitDiagnostics(for windows: CodexNormalizedRateWindows) -> [String] {
@@ -1395,8 +1692,8 @@ final class CodexUsageReader {
 
     private func readLocalUsage(context: RuntimeLoadContext, messages: inout [String]) -> LocalUsage? {
         guard let dbPath = firstExistingPath([
-            NSHomeDirectory() + "/.codex/state_5.sqlite",
-            NSHomeDirectory() + "/.codex/sqlite/state_5.sqlite"
+            environment.dataDirectory.appendingPathComponent("state_5.sqlite").path,
+            environment.dataDirectory.appendingPathComponent("sqlite/state_5.sqlite").path
         ]) else {
             messages.append("未找到 Codex state_5.sqlite")
             return nil
@@ -1415,11 +1712,8 @@ final class CodexUsageReader {
         let now = context.now
         let dayStart = calendar.startOfDay(for: now)
         let sevenDayStart = calendar.date(byAdding: .day, value: -6, to: dayStart) ?? dayStart
-        let dayFormatter = DateFormatter()
-        dayFormatter.calendar = calendar
-        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dayFormatter.dateFormat = "yyyy-MM-dd"
         let labelFormatter = DateFormatter()
+        labelFormatter.timeZone = calendar.timeZone
         labelFormatter.calendar = calendar
         labelFormatter.locale = Locale(identifier: "zh_CN")
         labelFormatter.dateFormat = "M/d"
@@ -1427,8 +1721,6 @@ final class CodexUsageReader {
         let totalsQuery = """
         SELECT
           COALESCE(SUM(tokens_used), 0) AS lifetimeTokens,
-          COALESCE(SUM(CASE WHEN updated_at >= \(Int(dayStart.timeIntervalSince1970)) THEN tokens_used ELSE 0 END), 0) AS todayTokens,
-          COALESCE(SUM(CASE WHEN updated_at >= \(Int(sevenDayStart.timeIntervalSince1970)) THEN tokens_used ELSE 0 END), 0) AS sevenDayTokens,
           COUNT(*) AS threadCount,
           COALESCE(MAX(updated_at), 0) AS lastUpdatedAt
         FROM threads;
@@ -1441,21 +1733,11 @@ final class CodexUsageReader {
         LIMIT 5;
         """
 
-        let dailyQuery = """
-        SELECT updated_at AS updatedAt, tokens_used AS tokens
-        FROM threads
-        WHERE updated_at >= \(Int(sevenDayStart.timeIntervalSince1970))
-        ORDER BY updated_at ASC;
-        """
-
-        guard
-            let totalsObject = runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: totalsQuery).first,
-            let recentObjects = Optional(runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: recentQuery)),
-            let dailyObjects = Optional(runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: dailyQuery))
-        else {
+        guard let totalsObject = runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: totalsQuery).first else {
             messages.append("SQLite 查询失败")
             return nil
         }
+        let recentObjects = runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: recentQuery)
 
         let recent = recentObjects.map { object in
             LocalThread(
@@ -1466,23 +1748,6 @@ final class CodexUsageReader {
                 model: object["model"] as? String,
                 cwd: object["cwd"] as? String ?? "",
                 archived: (intValue(object["archived"]) ?? 0) != 0
-            )
-        }
-
-        var tokensByDay: [String: Int64] = [:]
-        for object in dailyObjects {
-            guard let updatedAt = dateFromEpoch(object["updatedAt"]) else { continue }
-            let key = context.statistics.dayKey(for: updatedAt)
-            tokensByDay[key, default: 0] += int64Value(object["tokens"]) ?? 0
-        }
-
-        let dailyBuckets = (0..<7).compactMap { index -> DailyTokenBucket? in
-            guard let date = calendar.date(byAdding: .day, value: index - 6, to: dayStart) else { return nil }
-            let key = dayFormatter.string(from: date)
-            return DailyTokenBucket(
-                id: key,
-                label: index == 6 ? "今天" : labelFormatter.string(from: date),
-                tokens: tokensByDay[key] ?? 0
             )
         }
 
@@ -1504,23 +1769,22 @@ final class CodexUsageReader {
 
         return LocalUsage(
             lifetimeTokens: int64Value(totalsObject["lifetimeTokens"]) ?? 0,
-            todayTokens: int64Value(totalsObject["todayTokens"]) ?? 0,
-            sevenDayTokens: int64Value(totalsObject["sevenDayTokens"]) ?? 0,
+            todayTokens: analytics.detailedUsage?.today.tokens.visibleTotalTokens ?? 0,
+            sevenDayTokens: analytics.detailedUsage?.sevenDay.tokens.visibleTotalTokens ?? 0,
             threadCount: intValue(totalsObject["threadCount"]) ?? 0,
             lastUpdatedAt: dateFromEpoch(totalsObject["lastUpdatedAt"]),
-            dailyBuckets: dailyBuckets,
+            dailyBuckets: analytics.usageTrend?.dayBuckets.suffix(7).map { bucket in
+                DailyTokenBucket(id: bucket.id, label: labelFormatter.string(from: bucket.date), tokens: bucket.tokens)
+            } ?? [],
             recentThreads: recent,
             detailedUsage: analytics.detailedUsage,
-            usageTrend: analytics.usageTrend ?? readApproximateUsageTrend(
-                sqlitePath: sqlitePath,
-                dbPath: dbPath,
-                dayStart: dayStart,
-                sevenDayStart: sevenDayStart,
-                calendar: calendar
-            ),
+            usageTrend: analytics.usageTrend,
             projectBoard: projectBoard,
             toolUsages: analytics.toolUsages,
-            skillUsages: analytics.skillUsages
+            skillUsages: analytics.skillUsages,
+            hasDailyTokenEvidence: analytics.detailedUsage != nil,
+            parsedSourceCount: analytics.parsedSourceCount,
+            totalSourceCount: analytics.totalSourceCount
         )
     }
 
@@ -1601,6 +1865,7 @@ final class CodexUsageReader {
         var recentProjectUsage: [String: ProjectUsageAccumulator] = [:]
         var toolUsage: [String: ToolUsageAccumulator] = [:]
         var skillUsage: [String: SkillUsageAccumulator] = [:]
+        var parsedSources = 0
         for source in sources {
             guard let entry = cachedSessionUsage(
                 source: source,
@@ -1608,6 +1873,7 @@ final class CodexUsageReader {
                 plainFormatter: plainFormatter
             ) else { continue }
 
+            if !entry.hasParseErrors { parsedSources += 1 }
             if entry.hasTokenEvents {
                 accumulator.parsedFileCount += 1
                 accumulator.tokenEventCount += entry.tokenEventCount
@@ -1646,22 +1912,10 @@ final class CodexUsageReader {
                 }
             }
 
-            let totalToolCalls = entry.toolCalls.values.reduce(0, +)
-            if totalToolCalls > 0, sessionUsage.tokens.visibleTotalTokens > 0 {
-                for (name, count) in entry.toolCalls {
-                    let share = Double(count) / Double(totalToolCalls)
-                    let estimatedTokens = Int64((Double(sessionUsage.tokens.visibleTotalTokens) * share).rounded())
-                    let estimatedCost = sessionUsage.estimatedCostUSD * share
-                    var usage = toolUsage[name] ?? ToolUsageAccumulator(name: name)
-                    usage.addCalls(count, estimatedTokens: estimatedTokens, estimatedCostUSD: estimatedCost)
-                    toolUsage[name] = usage
-                }
-            } else {
-                for (name, count) in entry.toolCalls {
-                    var usage = toolUsage[name] ?? ToolUsageAccumulator(name: name)
-                    usage.addCalls(count, estimatedTokens: 0, estimatedCostUSD: 0)
-                    toolUsage[name] = usage
-                }
+            for (name, count) in entry.toolCalls {
+                var usage = toolUsage[name] ?? ToolUsageAccumulator(name: name)
+                usage.addCalls(count, estimatedTokens: 0, estimatedCostUSD: 0)
+                toolUsage[name] = usage
             }
 
             for event in entry.skillLoads {
@@ -1673,6 +1927,7 @@ final class CodexUsageReader {
 
         writePersistentSessionUsageCache()
         let skillUsages = makeSkillUsages(from: skillUsage)
+        if parsedSources < sources.count { messages.append("统计覆盖不完整：\(parsedSources)/\(sources.count) 份日志可读") }
 
         guard accumulator.parsedFileCount > 0, accumulator.tokenEventCount > 0 else {
             messages.append("未找到 Codex token_count 事件")
@@ -1683,7 +1938,7 @@ final class CodexUsageReader {
                 toolUsages: toolUsage.values
                     .map { $0.makeUsage() }
                     .sorted { $0.callCount == $1.callCount ? $0.name < $1.name : $0.callCount > $1.callCount },
-                skillUsages: skillUsages
+                skillUsages: skillUsages, parsedSourceCount: parsedSources, totalSourceCount: sources.count
             )
             Self.localAnalyticsCache = LocalAnalyticsCacheEntry(
                 version: localAnalyticsCacheVersion,
@@ -1704,7 +1959,8 @@ final class CodexUsageReader {
                 sevenDayStart: sevenDayStart,
                 trendStart: trendStart,
                 monthStart: monthStart,
-                sourceQuality: .detailed
+                sourceQuality: .detailed,
+                calendar: calendar
             ),
             recentProjects: recentProjectUsage.values
                 .map { $0.makeUsage() }
@@ -1713,7 +1969,7 @@ final class CodexUsageReader {
             toolUsages: toolUsage.values
                 .map { $0.makeUsage() }
                 .sorted { $0.callCount == $1.callCount ? $0.name < $1.name : $0.callCount > $1.callCount },
-            skillUsages: skillUsages
+            skillUsages: skillUsages, parsedSourceCount: parsedSources, totalSourceCount: sources.count
         )
         Self.localAnalyticsCache = LocalAnalyticsCacheEntry(
             version: localAnalyticsCacheVersion,
@@ -1732,9 +1988,9 @@ final class CodexUsageReader {
         sevenDayStart: Date,
         trendStart: Date,
         monthStart: Date,
-        sourceQuality: UsageSourceQuality
+        sourceQuality: UsageSourceQuality,
+        calendar: Calendar
     ) -> UsageTrend {
-        let calendar = Calendar.current
         var buckets: [UsageDayBucket] = []
         var cursor = calendar.startOfDay(for: trendStart)
         let end = calendar.startOfDay(for: dayStart)
@@ -1781,8 +2037,8 @@ final class CodexUsageReader {
             isNewActivity = sevenDay.tokens.visibleTotalTokens > 0
         }
 
-        let dayOfMonth = max(calendar.component(.day, from: Date()), 1)
-        let daysInMonth = calendar.range(of: .day, in: .month, for: Date())?.count ?? dayOfMonth
+        let dayOfMonth = max(calendar.component(.day, from: dayStart), 1)
+        let daysInMonth = calendar.range(of: .day, in: .month, for: dayStart)?.count ?? dayOfMonth
         let projectedMonthCostUSD: Double?
         if dayOfMonth >= 2, month.estimatedCostUSD > 0 {
             projectedMonthCostUSD = month.estimatedCostUSD / Double(dayOfMonth) * Double(daysInMonth)
@@ -1877,60 +2133,6 @@ final class CodexUsageReader {
         return calendar.date(byAdding: .day, value: -mondayOffset, to: calendar.startOfDay(for: date)) ?? date
     }
 
-    private func readApproximateUsageTrend(
-        sqlitePath: String,
-        dbPath: String,
-        dayStart: Date,
-        sevenDayStart: Date,
-        calendar: Calendar
-    ) -> UsageTrend? {
-        let trendStart = calendar.date(byAdding: .day, value: -190, to: dayStart) ?? sevenDayStart
-        var monthComponents = calendar.dateComponents([.year, .month], from: Date())
-        monthComponents.day = 1
-        monthComponents.hour = 0
-        monthComponents.minute = 0
-        monthComponents.second = 0
-        let monthStart = calendar.date(from: monthComponents) ?? dayStart
-
-        let query = """
-        SELECT updated_at AS updatedAt, tokens_used AS tokens
-        FROM threads
-        WHERE updated_at >= \(Int(trendStart.timeIntervalSince1970))
-        ORDER BY updated_at ASC;
-        """
-
-        let rows = runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: query)
-        guard !rows.isEmpty else { return nil }
-
-        var dailyUsage: [String: PricedTokenUsage] = [:]
-        for row in rows {
-            guard let updatedAt = dateFromEpoch(row["updatedAt"]) else { continue }
-            let key = localDayKey(updatedAt, calendar: calendar)
-            let tokens = int64Value(row["tokens"]) ?? 0
-            var usage = dailyUsage[key] ?? .zero
-            usage.add(
-                tokens: TokenBreakdown(
-                    inputTokens: 0,
-                    cachedInputTokens: 0,
-                    outputTokens: 0,
-                    reasoningOutputTokens: 0,
-                    totalTokens: tokens
-                ),
-                costUSD: 0
-            )
-            dailyUsage[key] = usage
-        }
-
-        return makeUsageTrend(
-            dailyUsage: dailyUsage,
-            dayStart: dayStart,
-            sevenDayStart: sevenDayStart,
-            trendStart: trendStart,
-            monthStart: monthStart,
-            sourceQuality: .approximate
-        )
-    }
-
     private func readAllTimeProjects(sqlitePath: String, dbPath: String) -> [ProjectUsage] {
         let query = """
         SELECT cwd, COUNT(*) AS threadCount, COALESCE(SUM(tokens_used), 0) AS tokens, MAX(CASE WHEN recency_at > 0 THEN recency_at ELSE updated_at END) AS lastActiveAt
@@ -2023,64 +2225,64 @@ final class CodexUsageReader {
         else { return nil }
 
         let modificationDate = attributes[.modificationDate] as? Date
+        let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
         if let cached = memorySessionUsageCacheEntry(for: source.rolloutPath),
-           sameSessionFileIdentity(cached, fileSize: fileSize, modificationDate: modificationDate) {
+           sameSessionFileIdentity(cached, fileSize: fileSize, modificationDate: modificationDate, fileNumber: fileNumber) {
             return cached
         }
 
         if let cached = persistentSessionUsageCache()[source.rolloutPath],
-           sameSessionFileIdentity(cached, fileSize: fileSize, modificationDate: modificationDate) {
+           sameSessionFileIdentity(cached, fileSize: fileSize, modificationDate: modificationDate, fileNumber: fileNumber) {
             storeSessionUsageCacheEntry(cached, for: source.rolloutPath, markDirty: false)
             return cached
         }
 
-        let eventPattern = #""type":"(token_count|function_call|custom_tool_call)""#
-        let tokenCountNeedle = Data(#""type":"token_count""#.utf8)
-        let functionCallNeedle = Data(#""type":"function_call""#.utf8)
-        let customToolCallNeedle = Data(#""type":"custom_tool_call""#.utf8)
-        if let parsed = parseSessionUsageWithGrep(
-            url: url,
-            eventPattern: eventPattern,
-            tokenCountNeedle: tokenCountNeedle,
-            functionCallNeedle: functionCallNeedle,
-            customToolCallNeedle: customToolCallNeedle,
-            fractionalFormatter: fractionalFormatter,
-            plainFormatter: plainFormatter
-        ) {
-            let entry = SessionUsageCacheEntry(
-                fileSize: fileSize,
-                modificationDate: modificationDate,
-                hasTokenEvents: parsed.hasTokenEvents,
-                tokenEventCount: parsed.tokenEventCount,
-                deltas: parsed.deltas,
-                toolCalls: parsed.toolCalls,
-                skillLoads: parsed.skillLoads
-            )
-            storeSessionUsageCacheEntry(entry, for: source.rolloutPath)
-            return entry
-        }
-
+        let tokenCountNeedle = Data(#""token_count""#.utf8)
+        let functionCallNeedle = Data(#""function_call""#.utf8)
+        let customToolCallNeedle = Data(#""custom_tool_call""#.utf8)
+        let cached = memorySessionUsageCacheEntry(for: source.rolloutPath) ?? persistentSessionUsageCache()[source.rolloutPath]
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
 
+        func checkpointHash(at size: UInt64) -> Data? {
+            do {
+                try handle.seek(toOffset: size > 4096 ? size - 4096 : 0)
+                guard let tail = try handle.read(upToCount: Int(min(size, 4096))) else { return nil }
+                return Data(SHA256.hash(data: tail))
+            } catch { return nil }
+        }
+        let reusable = cached.flatMap { entry -> SessionUsageCacheEntry? in
+            guard entry.fileSize < fileSize, entry.fileNumber == fileNumber,
+                  entry.previousTotal != nil, entry.processedByteCount != nil,
+                  let fingerprint = entry.checkpointHash,
+                  checkpointHash(at: UInt64(entry.fileSize)) == fingerprint else { return nil }
+            return entry
+        }
+        let offset = reusable?.processedByteCount ?? 0
+        guard (try? handle.seek(toOffset: offset)) != nil else { return nil }
         var buffer = Data()
-        var previous = TokenBreakdown.zero
-        var sawTokenEvent = false
-        var tokenEventCount = 0
-        var deltas: [SessionUsageDelta] = []
-        var toolCalls: [String: Int] = [:]
-        var skillLoads: [SkillLoadEvent] = []
+        var previous = reusable?.previousTotal ?? .zero
+        var sawTokenEvent = reusable?.hasTokenEvents ?? false
+        var tokenEventCount = reusable?.tokenEventCount ?? 0
+        var deltas: [SessionUsageDelta] = reusable?.deltas ?? []
+        var toolCalls: [String: Int] = reusable?.toolCalls ?? [:]
+        var skillLoads: [SkillLoadEvent] = reusable?.skillLoads ?? []
+        var hasParseErrors = reusable?.hasParseErrors ?? false
+        var processedOffset = offset
+        var readOffset = offset
 
         while true {
-            let chunk = try? handle.read(upToCount: 64 * 1024)
-            guard let chunk, !chunk.isEmpty else {
-                break
-            }
+            guard readOffset < UInt64(fileSize) else { break }
+            guard let chunk = try? handle.read(upToCount: Int(min(64 * 1024, UInt64(fileSize) - readOffset))), !chunk.isEmpty else { return nil }
+            readOffset += UInt64(chunk.count)
             buffer.append(chunk)
 
             while let newline = buffer.firstIndex(of: 10) {
                 let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+                processedOffset += UInt64(newline - buffer.startIndex + 1)
                 buffer.removeSubrange(buffer.startIndex...newline)
+                if (lineData.range(of: tokenCountNeedle) != nil || lineData.range(of: functionCallNeedle) != nil || lineData.range(of: customToolCallNeedle) != nil),
+                   (try? JSONSerialization.jsonObject(with: lineData)) == nil { hasParseErrors = true }
                 processSessionLine(
                     lineData,
                     tokenCountNeedle: tokenCountNeedle,
@@ -2098,7 +2300,7 @@ final class CodexUsageReader {
             }
         }
 
-        if !buffer.isEmpty {
+        if !buffer.isEmpty, (try? JSONSerialization.jsonObject(with: buffer)) != nil {
             processSessionLine(
                 buffer,
                 tokenCountNeedle: tokenCountNeedle,
@@ -2115,6 +2317,8 @@ final class CodexUsageReader {
             )
         }
 
+        if !buffer.isEmpty, (try? JSONSerialization.jsonObject(with: buffer)) != nil { processedOffset = UInt64(fileSize) }
+        let fingerprint = checkpointHash(at: UInt64(fileSize))
         let entry = SessionUsageCacheEntry(
             fileSize: fileSize,
             modificationDate: modificationDate,
@@ -2122,7 +2326,8 @@ final class CodexUsageReader {
             tokenEventCount: tokenEventCount,
             deltas: deltas,
             toolCalls: toolCalls,
-            skillLoads: skillLoads
+            skillLoads: skillLoads, previousTotal: previous, processedByteCount: processedOffset,
+            fileNumber: fileNumber, checkpointHash: fingerprint, hasParseErrors: hasParseErrors
         )
         storeSessionUsageCacheEntry(entry, for: source.rolloutPath)
         return entry
@@ -2150,86 +2355,6 @@ final class CodexUsageReader {
             let evicted = Self.sessionUsageCacheOrder.removeFirst()
             Self.sessionUsageCache.removeValue(forKey: evicted)
         }
-    }
-
-    private func parseSessionUsageWithGrep(
-        url: URL,
-        eventPattern: String,
-        tokenCountNeedle: Data,
-        functionCallNeedle: Data,
-        customToolCallNeedle: Data,
-        fractionalFormatter: ISO8601DateFormatter,
-        plainFormatter: ISO8601DateFormatter
-    ) -> (hasTokenEvents: Bool, tokenEventCount: Int, deltas: [SessionUsageDelta], toolCalls: [String: Int], skillLoads: [SkillLoadEvent])? {
-        let grepPath = "/usr/bin/grep"
-        guard fileManager.isExecutableFile(atPath: grepPath) else { return nil }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: grepPath)
-        process.arguments = ["-a", "-E", eventPattern, url.path]
-
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
-            return nil
-        }
-
-        var buffer = data
-        var previous = TokenBreakdown.zero
-        var sawTokenEvent = false
-        var tokenEventCount = 0
-        var deltas: [SessionUsageDelta] = []
-        var toolCalls: [String: Int] = [:]
-        var skillLoads: [SkillLoadEvent] = []
-
-        while let newline = buffer.firstIndex(of: 10) {
-            let lineData = buffer.subdata(in: buffer.startIndex..<newline)
-            buffer.removeSubrange(buffer.startIndex...newline)
-            processSessionLine(
-                lineData,
-                tokenCountNeedle: tokenCountNeedle,
-                functionCallNeedle: functionCallNeedle,
-                customToolCallNeedle: customToolCallNeedle,
-                fractionalFormatter: fractionalFormatter,
-                plainFormatter: plainFormatter,
-                previous: &previous,
-                sawTokenEvent: &sawTokenEvent,
-                tokenEventCount: &tokenEventCount,
-                deltas: &deltas,
-                toolCalls: &toolCalls,
-                skillLoads: &skillLoads
-            )
-        }
-
-        if !buffer.isEmpty {
-            processSessionLine(
-                buffer,
-                tokenCountNeedle: tokenCountNeedle,
-                functionCallNeedle: functionCallNeedle,
-                customToolCallNeedle: customToolCallNeedle,
-                fractionalFormatter: fractionalFormatter,
-                plainFormatter: plainFormatter,
-                previous: &previous,
-                sawTokenEvent: &sawTokenEvent,
-                tokenEventCount: &tokenEventCount,
-                deltas: &deltas,
-                toolCalls: &toolCalls,
-                skillLoads: &skillLoads
-            )
-        }
-
-        return (sawTokenEvent, tokenEventCount, deltas, toolCalls, skillLoads)
     }
 
     private func processSessionLine(
@@ -2299,15 +2424,14 @@ final class CodexUsageReader {
         let calendar = context.statistics.calendar
         let now = context.now
         let dayStart = calendar.startOfDay(for: now)
-        let activeCutoff = now.addingTimeInterval(-2 * 60 * 60)
 
-        var activeItems: [TaskItem] = []
+        let activeItems: [TaskItem] = []
         var pendingItems: [TaskItem] = []
-        var doneItems: [TaskItem] = []
+        let doneItems: [TaskItem] = []
 
         if let dbPath = firstExistingPath([
-            NSHomeDirectory() + "/.codex/state_5.sqlite",
-            NSHomeDirectory() + "/.codex/sqlite/state_5.sqlite"
+            environment.dataDirectory.appendingPathComponent("state_5.sqlite").path,
+            environment.dataDirectory.appendingPathComponent("sqlite/state_5.sqlite").path
         ]), let sqlitePath = firstExistingPath([
             "/usr/bin/sqlite3",
             "/opt/homebrew/bin/sqlite3",
@@ -2337,17 +2461,13 @@ final class CodexUsageReader {
             let todayThreads = runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: todayThreadsQuery)
             for object in todayThreads {
                 let updatedAt = dateFromEpoch(object["recencyAt"]) ?? dateFromEpoch(object["updatedAt"])
-                let kind: TaskColumnKind = (updatedAt ?? .distantPast) >= activeCutoff ? .active : .pending
+                let kind: TaskColumnKind = .pending
                 let item = makeThreadTaskItem(object: object, updatedAt: updatedAt, kind: kind)
-                if kind == .active {
-                    activeItems.append(item)
-                } else {
-                    pendingItems.append(item)
-                }
+                pendingItems.append(item)
             }
 
-            doneItems = runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: archivedTodayQuery).map { object in
-                makeThreadTaskItem(object: object, updatedAt: dateFromEpoch(object["updatedAt"]), kind: .done)
+            pendingItems += runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: archivedTodayQuery).map { object in
+                makeThreadTaskItem(object: object, updatedAt: dateFromEpoch(object["updatedAt"]), kind: .pending)
             }
         } else {
             messages.append("任务看板未找到 SQLite 数据源")
@@ -2357,9 +2477,9 @@ final class CodexUsageReader {
 
         return TaskBoard(refreshedAt: Date(), columns: [
             TaskColumn(id: .active, title: "进行中", count: activeItems.count, items: activeItems),
-            TaskColumn(id: .pending, title: "待处理", count: pendingItems.count, items: pendingItems),
+            TaskColumn(id: .pending, title: "状态未知", count: pendingItems.count, items: pendingItems),
             TaskColumn(id: .scheduled, title: "定时", count: scheduledItems.count, items: scheduledItems),
-            TaskColumn(id: .done, title: "完成", count: doneItems.count, items: doneItems)
+            TaskColumn(id: .done, title: "执行结束 · 待检查", count: doneItems.count, items: doneItems)
         ])
     }
 
@@ -2376,7 +2496,7 @@ final class CodexUsageReader {
         case .active:
             chip = tokens >= 5_000_000 ? "High" : "Active"
         case .pending:
-            chip = tokens >= 2_000_000 ? "Medium" : "Idle"
+            chip = "Unknown"
         case .scheduled:
             chip = "Cron"
         case .done:
@@ -2401,7 +2521,7 @@ final class CodexUsageReader {
     }
 
     private func readAutomationTasks() -> [TaskItem] {
-        let root = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/automations")
+        let root = environment.dataDirectory.appendingPathComponent("automations")
         guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: nil) else {
             return []
         }
@@ -2443,26 +2563,7 @@ final class CodexUsageReader {
     }
 
     private func resolveCodexExecutablePath() -> String? {
-        var candidates: [String] = []
-
-        // The app's display name and install path may change, while its bundle identifier remains stable.
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") {
-            candidates.append(
-                appURL
-                    .appendingPathComponent("Contents/Resources/codex")
-                    .path
-            )
-        }
-
-        candidates.append(contentsOf: [
-            "/Applications/ChatGPT.app/Contents/Resources/codex",
-            "/Applications/Codex.app/Contents/Resources/codex",
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex",
-            "/usr/bin/codex"
-        ])
-
-        return firstExistingPath(candidates)
+        environment.executablePath
     }
 
     private func firstExistingPath(_ paths: [String]) -> String? {
@@ -2470,21 +2571,11 @@ final class CodexUsageReader {
     }
 
     private func localAnalyticsCacheURL() -> URL? {
-        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        return caches
-            .appendingPathComponent("CodexUsage", isDirectory: true)
-            .appendingPathComponent("local-analytics-v2.json")
+        environment.cacheDirectory.appendingPathComponent("local-analytics-v2.json")
     }
 
     private func sessionUsageCacheURL() -> URL? {
-        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        return caches
-            .appendingPathComponent("CodexUsage", isDirectory: true)
-            .appendingPathComponent("session-usage-v1.json")
+        environment.cacheDirectory.appendingPathComponent("session-usage-v1.json")
     }
 
     private func readPersistentLocalAnalyticsCache() -> LocalAnalyticsCacheEntry? {
@@ -2565,9 +2656,10 @@ final class CodexUsageReader {
     private func sameSessionFileIdentity(
         _ cached: SessionUsageCacheEntry,
         fileSize: Int64,
-        modificationDate: Date?
+        modificationDate: Date?,
+        fileNumber: UInt64?
     ) -> Bool {
-        guard cached.fileSize == fileSize else { return false }
+        guard cached.fileSize == fileSize, cached.fileNumber == fileNumber else { return false }
         let cachedMs = Int64((cached.modificationDate?.timeIntervalSince1970 ?? -1) * 1000)
         let currentMs = Int64((modificationDate?.timeIntervalSince1970 ?? -1) * 1000)
         return cachedMs == currentMs
@@ -2586,6 +2678,7 @@ final class CodexUsageReader {
                 components.append("missing")
                 continue
             }
+            components.append(String((attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0))
             components.append(String((attributes[.size] as? NSNumber)?.int64Value ?? -1))
             let modifiedMs = Int64(((attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1) * 1000)
             components.append(String(modifiedMs))
@@ -3458,6 +3551,9 @@ struct UsageWidgetView: View {
                 )
                 .frame(width: 145, height: 145)
 
+                Text(store.runtimeSnapshot(for: store.selectedRuntimeScope)?.quotaSourceLabel ?? "当前额度未确认")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
                 QuotaResetSummary(
                     fiveHourQuota: snapshot.fiveHourQuota,
                     sevenDayQuota: snapshot.sevenDayQuota,
@@ -3479,14 +3575,14 @@ struct UsageWidgetView: View {
                         title: language.text("今日", "Today"),
                         systemName: "sun.max.fill",
                         usage: snapshot.local?.detailedUsage?.today,
-                        fallbackTokens: snapshot.local?.todayTokens,
+                        fallbackTokens: snapshot.local?.hasDailyTokenEvidence == true ? snapshot.local?.todayTokens : nil,
                         language: language
                     )
                     DetailedTokenMetricCard(
                         title: language.text("近 7 天", "Last 7 days"),
                         systemName: "calendar",
                         usage: snapshot.local?.detailedUsage?.sevenDay,
-                        fallbackTokens: snapshot.local?.sevenDayTokens,
+                        fallbackTokens: snapshot.local?.hasDailyTokenEvidence == true ? snapshot.local?.sevenDayTokens : nil,
                         language: language
                     )
                     DetailedTokenMetricCard(
@@ -3533,6 +3629,10 @@ struct UsageWidgetView: View {
         case .tasks:
             taskBoardContent
         case .usage:
+            if let local = snapshot.local, store.selectedRuntimeScope == .codex {
+                Text(language.text("日志覆盖 \(local.parsedSourceCount)/\(local.totalSourceCount) · \(local.hasDailyTokenEvidence ? "事件增量" : "每日消耗未知")", "Log coverage \(local.parsedSourceCount)/\(local.totalSourceCount) · \(local.hasDailyTokenEvidence ? "event deltas" : "daily usage unknown")"))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
             UsageTrendPanel(
                 trend: snapshot.local?.usageTrend,
                 runtimeScope: store.selectedRuntimeScope,
@@ -3560,36 +3660,11 @@ struct UsageWidgetView: View {
 
     private var taskBoardContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let progress = taskProgress, let percent = progress.percent {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Text(language.text("今日对话任务进度", "Today's conversation progress"))
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(language.text(
-                            "\(progress.completedCount) / \(progress.trackedCount) 完成",
-                            "\(progress.completedCount) / \(progress.trackedCount) completed"
-                        ))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        Text("\(percent)%")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(WidgetPalette.statusSuccess)
-                    }
-
-                    ProgressView(value: Double(percent), total: 100)
-                        .progressViewStyle(.linear)
-                        .tint(WidgetPalette.statusSuccess)
-                        .accessibilityLabel(language.text("今日对话任务进度", "Today's conversation progress"))
-                        .accessibilityValue("\(percent)%")
-                }
-                .padding(.horizontal, 4)
-                .help(language.text(
-                    "根据今日本机 Codex 对话的活跃、待处理和归档状态估算；定时任务不计入。",
-                    "Estimated from today's active, pending, and archived local Codex conversations; automations are excluded."
-                ))
+            if let message = store.taskMonitorMessage {
+                Text(message).font(.system(size: 10)).foregroundStyle(WidgetPalette.statusWarning)
             }
+            Text(language.text("运行与结束状态来自任务事件；执行结束后仍需检查结果。", "Task events report running and ended turns; results still need review."))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
 
             HStack(alignment: .top, spacing: 8) {
                 ForEach(taskBoardColumns) { column in
@@ -3896,7 +3971,7 @@ struct TitlebarToolbarView: View {
                 ) {
                     onRefresh()
                 }
-                .disabled(store.isRefreshing)
+
 
                 HeaderActionButton(
                     systemName: "gearshape",
@@ -7709,9 +7784,9 @@ struct ToolUsageList: View {
                     title: language.text("工具使用 TOP20", "Tool usage TOP20"),
                     systemName: "wrench.and.screwdriver.fill"
                 ) {
-                    InfoChip(title: "Token", value: language.text("估算", "Est."))
+                    InfoChip(title: language.text("口径", "Source"), value: language.text("调用次数", "Calls"))
                         .frame(height: dashboardHeaderControlHeight)
-                        .help(language.text("调用次数为事件计数；工具 token 按 session 内调用占比估算。", "Call counts are event counts. Tool tokens are estimated from each session's call share."))
+                        .help(language.text("调用次数来自事件；日志未提供工具级 token 和费用归属。", "Call counts come from events; per-tool tokens and costs are unavailable."))
                 }
 
                 if toolUsages.isEmpty {
@@ -7767,7 +7842,7 @@ struct ToolUsageRow: View {
                     Text(language.text("\(tool.callCount) 次", "\(tool.callCount)x"))
                         .font(.system(size: 10.5, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                    Text(tool.estimatedTokens.map { language.text("估算 \(formatTokens($0))", "est. \(formatTokens($0))") } ?? "--")
+                    Text(language.text("Token 未归属", "Tokens unattributed"))
                         .font(.system(size: 8.5, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -9617,7 +9692,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
         taskActivityStore.$snapshot
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
+            .sink { [weak self] activity in
+                self?.store.updateTaskActivity(activity)
                 self?.updateTaskIndicatorPulse()
                 self?.updateStatusItem()
             }
@@ -9842,6 +9918,9 @@ struct CodexSMain {
             exit(QuotaParticleAnimationSelfTest.run() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--self-test-data-integrity") {
+            exit(UsageStore.runDataIntegritySelfTest() && CodexUsageReader.runProtocolFixturesSelfTest() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--self-test-rate-limits") {
             exit(CodexRateLimitNormalizerSelfTest.run() ? 0 : 1)
         }
@@ -9890,6 +9969,12 @@ struct CodexSMain {
             exit(SubscriptionExpirationSelfTest.run() ? 0 : 1)
         }
 
+        if CommandLine.arguments.contains("--probe-task-discovery") {
+            switch ChatGPTSSHHostDiscovery.discover() {
+            case let .success(hosts): print("SSH discovery succeeded: \(hosts.count) connection(s)"); exit(0)
+            case let .failure(error): print("SSH discovery failed: \(error)"); exit(1)
+            }
+        }
         if CommandLine.arguments.contains("--dump-json") {
             dumpJSON(MultiRuntimeUsageReader().load())
             return

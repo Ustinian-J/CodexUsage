@@ -38,7 +38,7 @@ CODEXUSAGE_CACHE_OVERRIDE="$CACHE_DIR" \
 CODEXUSAGE_RUNTIME_FILTER="claude-code" \
   build/CodexS.app/Contents/MacOS/CodexS --dump-json > "$OUTPUT"
 
-grep -q '"schemaVersion" : 2' "$OUTPUT"
+grep -q '"schemaVersion" : 3' "$OUTPUT"
 grep -q '"id" : "claude-code"' "$OUTPUT"
 grep -q '"name" : "Read"' "$OUTPUT"
 grep -q '"remainingPercent" : 75' "$OUTPUT"

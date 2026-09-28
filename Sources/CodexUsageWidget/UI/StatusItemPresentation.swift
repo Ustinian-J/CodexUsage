@@ -256,7 +256,7 @@ struct StatusItemPresentationBuilder {
             metrics: metrics,
             taskIndicator: StatusItemTaskIndicatorPresentation(
                 monitorIsReady: taskActivity.availability == .ready,
-                runningCount: taskActivity.runningCount,
+                runningCount: taskActivity.confirmedRunningCount,
                 unreadCount: taskActivity.unreadCount,
                 yellowIsBright: yellowIsBright
             ),

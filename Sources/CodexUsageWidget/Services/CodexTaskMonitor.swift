@@ -233,7 +233,7 @@ final class CodexTaskActivityStore: ObservableObject {
     @Published private(set) var snapshot: CodexTaskActivitySnapshot
     var onNewCompletion: ((CodexTaskCompletion) -> Void)?
 
-    private let homeDirectory: URL
+    private let dataDirectory: URL
     private let persistence: CodexTaskActivityPersistence
     private let remoteCheckpointPersistence: CodexRemoteTaskCheckpointPersistence
     private var reducer: CodexTaskActivityReducer
@@ -243,6 +243,7 @@ final class CodexTaskActivityStore: ObservableObject {
     private var remoteMonitors: [String: RemoteCodexTaskMonitor] = [:]
     private var remoteMonitorIDs: [String: UUID] = [:]
     private var remoteCheckpoints: [String: Date]
+    private var lastSuccessfulReadBySource: [String: Date] = [:]
     private var sourceAvailability: [String: CodexTaskMonitorAvailability] = ["local": .starting]
     private var activeRemoteHosts: [String] = []
     private var remoteMonitoringEnabled = false
@@ -254,10 +255,13 @@ final class CodexTaskActivityStore: ObservableObject {
     private var started = false
 
     init(
-        homeDirectory: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
+        homeDirectory: URL = RuntimeLoadContext.live().homeDirectory,
+        dataDirectory: URL? = nil,
         defaults: UserDefaults = .standard
     ) {
-        self.homeDirectory = homeDirectory
+        self.dataDirectory = dataDirectory
+            ?? ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? homeDirectory.appendingPathComponent(".codex", isDirectory: true)
         let persistence = CodexTaskActivityPersistence(defaults: defaults)
         self.persistence = persistence
         let remoteCheckpointPersistence = CodexRemoteTaskCheckpointPersistence(defaults: defaults)
@@ -275,7 +279,7 @@ final class CodexTaskActivityStore: ObservableObject {
         started = true
         self.remoteMonitoringEnabled = remoteMonitoringEnabled
         let monitor = CodexTaskMonitor(
-            homeDirectory: homeDirectory,
+            dataDirectory: dataDirectory,
             baselineEstablished: baselineEstablished,
             replayNotBefore: replayNotBefore
         ) { [weak self] update in
@@ -352,16 +356,14 @@ final class CodexTaskActivityStore: ObservableObject {
             if !baselineEstablished {
                 baselineEstablished = true
             }
+            lastSuccessfulReadBySource["local"] = Date()
             sourceAvailability["local"] = .ready
             publishAndPersist()
 
         case let .checkpoint(date):
+            lastSuccessfulReadBySource["local"] = Date()
             guard replayNotBefore == nil || date > replayNotBefore! else { return }
             replayNotBefore = date
-            publishAndPersist()
-
-        case let .inactiveLocalTasks(identities):
-            guard reducer.removeRunningTasks(localIdentities: identities) else { return }
             publishAndPersist()
 
         case let .unavailable(message):
@@ -397,6 +399,7 @@ final class CodexTaskActivityStore: ObservableObject {
         case let .ready(checkpoint):
             remoteCheckpoints[host.lowercased()] = checkpoint
             remoteCheckpointPersistence.save(remoteCheckpoints)
+            lastSuccessfulReadBySource[sourceID] = Date()
             sourceAvailability[sourceID] = .ready
             publishAndPersist()
 
@@ -413,7 +416,8 @@ final class CodexTaskActivityStore: ObservableObject {
             remoteMonitors.removeValue(forKey: key)?.stop()
             remoteMonitorIDs.removeValue(forKey: key)
             sourceAvailability.removeValue(forKey: "remote:\(key)")
-            _ = reducer.removeRunningTasks(sourceLabel: key)
+            lastSuccessfulReadBySource.removeValue(forKey: "remote:\(key)")
+            _ = reducer.removeRunningTasks(sourceLabel: CodexRemoteHost.displayName(key))
         }
     }
 
@@ -466,13 +470,14 @@ final class CodexTaskActivityStore: ObservableObject {
                 self.remoteDiscoveryInFlight = false
                 switch result {
                 case let .success(hosts):
+                    self.lastSuccessfulReadBySource["remote-discovery"] = Date()
                     self.sourceAvailability.removeValue(forKey: "remote-discovery")
                     self.applyDiscoveredRemoteHosts(hosts, forceRestartUnavailable: forceRestartUnavailable)
-                case .failure:
-                    self.sourceAvailability["remote-discovery"] = .unavailable(
-                        "无法读取 ChatGPT 的 SSH 连接，远程监听已停止"
-                    )
-                    self.applyDiscoveredRemoteHosts([])
+                case let .failure(error):
+                    let message = error == .unsupportedConnection
+                        ? "无法识别桌面端的 SSH 连接参数，保留已有监听与任务"
+                        : "无法读取桌面端的 SSH 连接，保留已有监听与任务"
+                    self.sourceAvailability["remote-discovery"] = .unavailable(message)
                 }
                 if self.pendingForcedRemoteRefresh {
                     self.pendingForcedRemoteRefresh = false
@@ -537,8 +542,15 @@ final class CodexTaskActivityStore: ObservableObject {
     private func publishAndPersist() {
         snapshot = reducer.snapshot(
             availability: combinedAvailability(),
-            remoteHosts: activeRemoteHosts,
-            remoteMonitoringEnabled: remoteMonitoringEnabled
+            remoteHosts: activeRemoteHosts.map(CodexRemoteHost.displayName),
+            remoteMonitoringEnabled: remoteMonitoringEnabled,
+            sourceCoverage: sourceAvailability.keys.sorted().map { key in
+                CodexTaskSourceCoverage(
+                    sourceLabel: key == "local" ? "本地" : key == "remote-discovery" ? "SSH 发现" : CodexRemoteHost.displayName(String(key.dropFirst("remote:".count))),
+                    availability: sourceAvailability[key]!,
+                    lastSuccessfulReadAt: lastSuccessfulReadBySource[key]
+                )
+            }
         )
         persistence.save(reducer.persistedState(
             baselineEstablished: baselineEstablished,
@@ -549,7 +561,6 @@ final class CodexTaskActivityStore: ObservableObject {
 
 private enum CodexTaskMonitorUpdate {
     case events([CodexTaskEvent], CodexTaskEventOrigin)
-    case inactiveLocalTasks(Set<String>)
     case ready
     case checkpoint(Date)
     case unavailable(String)
@@ -722,7 +733,7 @@ enum CodexRolloutOpenFileProbe {
 }
 
 private final class CodexTaskMonitor {
-    private let homeDirectory: URL
+    private let dataDirectory: URL
     private let onUpdate: (CodexTaskMonitorUpdate) -> Void
     private let queue = DispatchQueue(label: "CodexS.task-monitor", qos: .utility)
     private let fileManager = FileManager.default
@@ -732,6 +743,9 @@ private final class CodexTaskMonitor {
     private var modificationDatesByPath: [String: Date] = [:]
     private var potentialRunningIdentityByPath: [String: String] = [:]
     private var livenessTracker = CodexTaskLivenessTracker()
+    private var discoveryHealthy = true
+    private var livenessHealthy = true
+    private var lastHealthMessage: String?
     private var initialScanCompleted = false
     private var baselineEstablished: Bool
     private var tickCount = 0
@@ -739,13 +753,13 @@ private final class CodexTaskMonitor {
     private var replayNotBefore: Date
 
     init(
-        homeDirectory: URL,
+        dataDirectory: URL,
         baselineEstablished: Bool,
         replayNotBefore: Date?,
         onUpdate: @escaping (CodexTaskMonitorUpdate) -> Void
     ) {
         let startedAt = Date()
-        self.homeDirectory = homeDirectory
+        self.dataDirectory = dataDirectory
         self.baselineEstablished = baselineEstablished
         self.startedAt = startedAt
         self.replayNotBefore = replayNotBefore ?? startedAt
@@ -794,6 +808,7 @@ private final class CodexTaskMonitor {
         let scanWatermark = Date()
         let checkpointCandidate = shouldDiscover ? scanWatermark : nil
         let discoverySucceeded = shouldDiscover ? discoverNewSources() : false
+        if shouldDiscover { discoveryHealthy = discoverySucceeded }
 
         var allReadsSucceeded = true
         var successfullyReadPaths = Set<String>()
@@ -814,10 +829,21 @@ private final class CodexTaskMonitor {
         }
 
         if let checkpointCandidate, discoverySucceeded {
-            reconcileLocalLiveness(
+            livenessHealthy = reconcileLocalLiveness(
                 at: checkpointCandidate,
                 successfullyReadPaths: successfullyReadPaths
             )
+        }
+        let healthMessage: String? = !discoveryHealthy
+            ? "暂时无法发现 Codex 本地任务记录，保留已有任务"
+            : !allReadsSucceeded
+                ? "暂时无法读取 Codex 本地任务记录，保留已有任务"
+                : !livenessHealthy
+                    ? "部分任务缺少近期活动证据，当前状态未知" : nil
+        if healthMessage != lastHealthMessage {
+            lastHealthMessage = healthMessage
+            if let healthMessage { onUpdate(.unavailable(healthMessage)) }
+            else { onUpdate(.ready) }
         }
         if let checkpointCandidate, discoverySucceeded, allReadsSucceeded {
             replayNotBefore = checkpointCandidate
@@ -879,7 +905,7 @@ private final class CodexTaskMonitor {
     }
 
     private func discoverSources() -> Result<[CodexTaskSource], ReadOnlySQLiteError> {
-        let codexDirectory = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+        let codexDirectory = dataDirectory
         let dbCandidates = [
             codexDirectory.appendingPathComponent("state_5.sqlite").path,
             codexDirectory.appendingPathComponent("sqlite/state_5.sqlite").path
@@ -1088,7 +1114,11 @@ private final class CodexTaskMonitor {
     private func reconcileLocalLiveness(
         at sampledAt: Date,
         successfullyReadPaths: Set<String>
-    ) {
+    ) -> Bool {
+        guard !potentialRunningIdentityByPath.isEmpty else {
+            livenessTracker.reset()
+            return true
+        }
         let pathsByIdentity = Dictionary(
             grouping: potentialRunningIdentityByPath.keys,
             by: { potentialRunningIdentityByPath[$0]! }
@@ -1101,9 +1131,9 @@ private final class CodexTaskMonitor {
                 }
             }
             .flatMap { $0 }
-        guard !verifiablePaths.isEmpty else {
+        guard verifiablePaths.count == potentialRunningIdentityByPath.count else {
             livenessTracker.reset()
-            return
+            return false
         }
 
         let candidatePaths = verifiablePaths.filter { sourcesByPath[$0] != nil }
@@ -1113,7 +1143,7 @@ private final class CodexTaskMonitor {
             openPaths = paths
         case .failure:
             livenessTracker.reset()
-            return
+            return false
         }
 
         let observations = verifiablePaths.compactMap { path -> CodexTaskLivenessObservation? in
@@ -1128,18 +1158,12 @@ private final class CodexTaskMonitor {
         }
         guard observations.count == verifiablePaths.count else {
             livenessTracker.reset()
-            return
+            return false
         }
 
-        let inactiveIdentities = livenessTracker.observe(observations, at: sampledAt)
-        guard !inactiveIdentities.isEmpty else { return }
-        potentialRunningIdentityByPath = potentialRunningIdentityByPath.filter { _, identity in
-            !inactiveIdentities.contains(identity)
-        }
-        modificationDatesByPath = modificationDatesByPath.filter { path, _ in
-            potentialRunningIdentityByPath[path] != nil || sourcesByPath[path] != nil
-        }
-        onUpdate(.inactiveLocalTasks(inactiveIdentities))
+        // A quiet, closed rollout can also be a live remote-backed task. Only an
+        // explicit terminal event may remove it; missing activity is uncertainty.
+        return livenessTracker.observe(observations, at: sampledAt).isEmpty
     }
 }
 

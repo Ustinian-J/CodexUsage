@@ -19,4 +19,10 @@
     <DebugType>none</DebugType>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+  <ItemGroup>
+    <Content Include="../../../tests/fixtures/codex-rate-limits.json"
+             Link="fixtures/codex-rate-limits.json"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

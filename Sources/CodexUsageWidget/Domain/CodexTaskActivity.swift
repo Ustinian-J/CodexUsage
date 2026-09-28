@@ -146,25 +146,34 @@ struct CodexTaskCompletion: Codable, Equatable, Identifiable {
     }
 }
 
+struct CodexTaskSourceCoverage: Equatable {
+    let sourceLabel: String
+    let availability: CodexTaskMonitorAvailability
+    let lastSuccessfulReadAt: Date?
+}
+
 struct CodexTaskActivitySnapshot: Equatable {
     let availability: CodexTaskMonitorAvailability
     let runningTasks: [CodexRunningTask]
     let recentCompletions: [CodexTaskCompletion]
     let remoteHosts: [String]
     let remoteMonitoringEnabled: Bool
+    let sourceCoverage: [CodexTaskSourceCoverage]
 
     init(
         availability: CodexTaskMonitorAvailability,
         runningTasks: [CodexRunningTask],
         recentCompletions: [CodexTaskCompletion],
         remoteHosts: [String] = [],
-        remoteMonitoringEnabled: Bool = false
+        remoteMonitoringEnabled: Bool = false,
+        sourceCoverage: [CodexTaskSourceCoverage] = []
     ) {
         self.availability = availability
         self.runningTasks = runningTasks
         self.recentCompletions = recentCompletions
         self.remoteHosts = remoteHosts
         self.remoteMonitoringEnabled = remoteMonitoringEnabled
+        self.sourceCoverage = sourceCoverage
     }
 
     static let starting = CodexTaskActivitySnapshot(
@@ -175,7 +184,16 @@ struct CodexTaskActivitySnapshot: Equatable {
 
     var runningCount: Int { runningTasks.count }
     var unreadCount: Int { recentCompletions.filter { $0.readAt == nil }.count }
-    var showsRed: Bool { runningCount > 0 }
+    var isPartiallyAvailable: Bool { availability != .ready && sourceCoverage.contains { $0.availability == .ready } }
+
+    func isSourceReady(_ sourceLabel: String?) -> Bool {
+        guard !sourceCoverage.isEmpty else { return availability == .ready }
+        let label = sourceLabel ?? "本地"
+        return sourceCoverage.first { $0.sourceLabel == label }?.availability == .ready
+    }
+
+    var confirmedRunningCount: Int { runningTasks.filter { isSourceReady($0.sourceLabel) }.count }
+    var showsRed: Bool { confirmedRunningCount > 0 }
     var showsYellow: Bool { unreadCount > 0 }
     var showsGreen: Bool { availability == .ready && runningCount == 0 }
 }
@@ -276,7 +294,7 @@ struct CodexTaskLivenessTracker {
         let grouped = Dictionary(grouping: observations, by: \.taskIdentity)
         closedSamplesByTaskIdentity = closedSamplesByTaskIdentity.filter { grouped[$0.key] != nil }
 
-        var inactive = Set<String>()
+        var uncertain = Set<String>()
         for (taskIdentity, taskObservations) in grouped {
             let isOpen = taskObservations.contains(where: \.isOpen)
             let isRecentlyModified = taskObservations.contains {
@@ -290,10 +308,10 @@ struct CodexTaskLivenessTracker {
             let closedSamples = (closedSamplesByTaskIdentity[taskIdentity] ?? 0) + 1
             closedSamplesByTaskIdentity[taskIdentity] = closedSamples
             if closedSamples >= Self.requiredClosedSamples {
-                inactive.insert(taskIdentity)
+                uncertain.insert(taskIdentity)
             }
         }
-        return inactive
+        return uncertain
     }
 
     mutating func reset() {
@@ -331,7 +349,8 @@ struct CodexTaskActivityReducer {
     func snapshot(
         availability: CodexTaskMonitorAvailability,
         remoteHosts: [String] = [],
-        remoteMonitoringEnabled: Bool = false
+        remoteMonitoringEnabled: Bool = false,
+        sourceCoverage: [CodexTaskSourceCoverage] = []
     ) -> CodexTaskActivitySnapshot {
         CodexTaskActivitySnapshot(
             availability: availability,
@@ -341,7 +360,8 @@ struct CodexTaskActivityReducer {
             },
             recentCompletions: completions,
             remoteHosts: remoteHosts,
-            remoteMonitoringEnabled: remoteMonitoringEnabled
+            remoteMonitoringEnabled: remoteMonitoringEnabled,
+            sourceCoverage: sourceCoverage
         )
     }
 
@@ -407,17 +427,6 @@ struct CodexTaskActivityReducer {
     mutating func removeRunningTasks(sourceLabel: String) -> Bool {
         let identities = runningByIdentity.values
             .filter { $0.sourceLabel?.caseInsensitiveCompare(sourceLabel) == .orderedSame }
-            .map(\.id)
-        guard !identities.isEmpty else { return false }
-        for identity in identities {
-            runningByIdentity.removeValue(forKey: identity)
-        }
-        return true
-    }
-
-    mutating func removeRunningTasks(localIdentities: Set<String>) -> Bool {
-        let identities = runningByIdentity.values
-            .filter { $0.sourceLabel == nil && localIdentities.contains($0.id) }
             .map(\.id)
         guard !identities.isEmpty else { return false }
         for identity in identities {

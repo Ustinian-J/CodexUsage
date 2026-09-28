@@ -1,13 +1,71 @@
 import Darwin
 import Foundation
 
+struct CodexSSHConnection: Codable, Equatable {
+    let destination: String
+    let port: Int?
+    let configurationPath: String?
+
+    var identifier: String {
+        guard port != nil || configurationPath != nil else { return destination }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(self) else { return destination }
+        return "ssh-connection:" + data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    var displayName: String {
+        destination + (port.map { ":\($0)" } ?? "")
+            + (configurationPath.map { " [\($0)]" } ?? "")
+    }
+
+    var optionArguments: [String] {
+        (configurationPath.map { ["-F", $0] } ?? []) + (port.map { ["-p", String($0)] } ?? [])
+    }
+
+    static func validated(destination: String, port: Int? = nil, configurationPath: String? = nil) -> Self? {
+        guard CodexRemoteHost.validatedDestination(destination) != nil,
+              port.map({ (1...65535).contains($0) }) ?? true else { return nil }
+        if let path = configurationPath {
+            // ps cannot distinguish quoted paths with spaces from separate argv.
+            guard path.hasPrefix("/"), path.utf8.count <= 1024,
+                  path.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "/._-".contains($0)) }) else { return nil }
+        }
+        return Self(destination: destination, port: port, configurationPath: configurationPath)
+    }
+
+    static func decode(_ identifier: String) -> Self? {
+        guard identifier.hasPrefix("ssh-connection:") else { return validated(destination: identifier) }
+        let hex = Array(identifier.dropFirst("ssh-connection:".count))
+        guard !hex.isEmpty, hex.count <= 8192, hex.count % 2 == 0 else { return nil }
+        var bytes: [UInt8] = []
+        for index in stride(from: 0, to: hex.count, by: 2) {
+            guard let byte = UInt8(String(hex[index...index + 1]), radix: 16) else { return nil }
+            bytes.append(byte)
+        }
+        guard let value = try? JSONDecoder().decode(Self.self, from: Data(bytes)) else { return nil }
+        return validated(destination: value.destination, port: value.port, configurationPath: value.configurationPath)
+    }
+}
+
 enum CodexRemoteHost {
     static func validated(_ rawValue: String) -> String? {
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty,
-              value.count <= 255,
-              value.first?.isLetter == true || value.first?.isNumber == true,
-              value.allSatisfy({ $0.isLetter || $0.isNumber || ".-_".contains($0) })
+        return CodexSSHConnection.decode(value)?.identifier
+    }
+
+    static func displayName(_ value: String) -> String {
+        CodexSSHConnection.decode(value)?.displayName ?? value
+    }
+
+    static func validatedDestination(_ rawValue: String) -> String? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = value.split(separator: "@", omittingEmptySubsequences: false)
+        guard (1...2).contains(parts.count), value.utf8.count <= 255,
+              parts.allSatisfy({ part in
+                  !part.isEmpty && part.first.map { $0.isASCII && ($0.isLetter || $0.isNumber) } == true
+                      && part.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || ".-_".contains($0)) }
+              })
         else { return nil }
         return value
     }
@@ -97,7 +155,7 @@ struct RemoteCodexTaskEnvelope: Decodable {
                 threadID: threadID,
                 title: compactTaskTitle(envelope.title ?? "Codex 任务"),
                 projectName: envelope.projectName.map { String($0.prefix(255)) },
-                sourceLabel: host
+                sourceLabel: CodexRemoteHost.displayName(host)
             ),
             kind: kind
         )
@@ -184,8 +242,8 @@ final class RemoteCodexTaskMonitor {
         self.host = host
         self.recoveryCheckpoint = recoveryCheckpoint
         self.onUpdate = onUpdate
-        self.queue = DispatchQueue(label: "CodexS.remote-task-monitor.\(host)", qos: .utility)
-        self.probeQueue = DispatchQueue(label: "CodexS.remote-task-probe.\(host)", qos: .utility)
+        self.queue = DispatchQueue(label: "CodexS.remote-task-monitor.\(CodexRemoteHost.displayName(host))", qos: .utility)
+        self.probeQueue = DispatchQueue(label: "CodexS.remote-task-probe.\(CodexRemoteHost.displayName(host))", qos: .utility)
     }
 
     func authorize() {
@@ -225,7 +283,7 @@ final class RemoteCodexTaskMonitor {
         guard CodexRemoteHost.validated(host) == host,
               FileManager.default.isExecutableFile(atPath: "/usr/bin/ssh")
         else {
-            onUpdate(.unavailable("远程任务主机配置无效：\(host)"))
+            onUpdate(.unavailable("远程任务主机配置无效：\(CodexRemoteHost.displayName(host))"))
             return
         }
         guard let sshConfigPath = prepareIsolatedSSHConfig()?.path else {
@@ -280,6 +338,7 @@ final class RemoteCodexTaskMonitor {
         let stderr = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        guard let target = CodexSSHConnection.decode(host) else { return }
         var arguments = [
             "-F", sshConfigPath,
             "-T",
@@ -302,10 +361,7 @@ final class RemoteCodexTaskMonitor {
                 "-o", "ControlPath=none",
             ]
         }
-        arguments += [
-            host,
-            Self.remoteCommand
-        ]
+        arguments += (target.port.map { ["-p", String($0)] } ?? []) + [target.destination, Self.remoteCommand]
         process.arguments = arguments
         process.standardOutput = stdout
         process.standardError = stderr
@@ -367,7 +423,7 @@ final class RemoteCodexTaskMonitor {
                       !streamReady,
                       let scanWatermark = envelope.scanWatermark
                 else {
-                    failProtocol("远程任务主机 \(host) 返回了无效的扫描起点")
+                    failProtocol("远程任务主机 \(CodexRemoteHost.displayName(host)) 返回了无效的扫描起点")
                     return
                 }
                 replayWindow = RemoteCodexReplayWindow(
@@ -381,7 +437,7 @@ final class RemoteCodexTaskMonitor {
                     onUpdate(.events([event], .live))
                 } else {
                     guard let replayWindow else {
-                        failProtocol("远程任务主机 \(host) 在扫描起点前返回了任务事件")
+                        failProtocol("远程任务主机 \(CodexRemoteHost.displayName(host)) 在扫描起点前返回了任务事件")
                         return
                     }
                     let origin = replayWindow.origin(for: event)
@@ -399,12 +455,15 @@ final class RemoteCodexTaskMonitor {
                       let replayWindow,
                       replayWindow.acceptsReady(watermark: readyWatermark)
                 else {
-                    failProtocol("远程任务主机 \(host) 返回了不一致的扫描水位线")
+                    failProtocol("远程任务主机 \(CodexRemoteHost.displayName(host)) 返回了不一致的扫描水位线")
                     return
                 }
                 finishReplay(scanStartedAt: readyWatermark)
+            case "healthy":
+                guard streamReady else { continue }
+                onUpdate(.ready(recoveryCheckpoint ?? Date()))
             case "error":
-                onUpdate(.unavailable("远程任务主机 \(host) 未找到可读的 Codex 会话"))
+                onUpdate(.unavailable("远程任务主机 \(CodexRemoteHost.displayName(host)) 未找到可读的 Codex 会话"))
             default:
                 continue
             }
@@ -434,7 +493,7 @@ final class RemoteCodexTaskMonitor {
         readyAtUptime = nil
         let delay = connectionBackoff.recordFailure(readyDuration: readyDuration)
         onUpdate(.unavailable(
-            "远程任务主机 \(host) 连接中断，\(Self.retryDelayText(delay))后自动重试"
+            "远程任务主机 \(CodexRemoteHost.displayName(host)) 连接中断，\(Self.retryDelayText(delay))后自动重试"
         ))
         scheduleRestart(after: delay)
     }
@@ -561,7 +620,8 @@ final class RemoteCodexTaskMonitor {
     private static func resolvedSSHConfiguration(host: String) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = ["-G", host]
+        guard let target = CodexSSHConnection.decode(host) else { return nil }
+        process.arguments = ["-G"] + target.optionArguments + [target.destination]
         process.standardInput = FileHandle.nullDevice
         let output = Pipe()
         let error = Pipe()
@@ -607,12 +667,12 @@ final class RemoteCodexTaskMonitor {
     private static func controlMasterIsRunning(path: String, host: String) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        guard let target = CodexSSHConnection.decode(host) else { return false }
         process.arguments = [
             "-S", path,
             "-O", "check",
             "-o", "BatchMode=yes",
-            host,
-        ]
+        ] + target.optionArguments + [target.destination]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -639,6 +699,9 @@ final class RemoteCodexTaskMonitor {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CodexS-ssh", isDirectory: true)
         let url = directory.appendingPathComponent(UUID().uuidString + ".conf")
+        guard let target = CodexSSHConnection.decode(host) else { return nil }
+        let configurationInclude = target.configurationPath ?? "~/.ssh/config"
+        let systemInclude = target.configurationPath == nil ? "Include /etc/ssh/ssh_config" : ""
         let contents = """
         Host *
             BatchMode yes
@@ -647,8 +710,8 @@ final class RemoteCodexTaskMonitor {
             ControlMaster no
             ControlPersist no
             ControlPath none
-        Include ~/.ssh/config
-        Include /etc/ssh/ssh_config
+        Include \(configurationInclude)
+        \(systemInclude)
         """
         do {
             try FileManager.default.createDirectory(
@@ -757,10 +820,10 @@ def fallback_source(path):
     return (None, True) if is_subagent else ((path, session_id, title, project, created), True)
 
 def discover_home():
-    candidates = [os.environ.get("CODEX_HOME"), os.path.expanduser("~/.codex")]
-    for candidate in candidates:
-        if candidate and (os.path.isdir(os.path.join(candidate, "sessions")) or os.path.isfile(os.path.join(candidate, "state_5.sqlite"))):
-            return candidate
+    user_home = os.environ.get("CODEXUSAGE_HOME_OVERRIDE") or os.path.expanduser("~")
+    candidate = os.environ.get("CODEX_HOME") or os.path.join(user_home, ".codex")
+    if any(os.path.exists(os.path.join(candidate, path)) for path in ("sessions", "archived_sessions", "state_5.sqlite", "sqlite/state_5.sqlite")):
+        return candidate
     return None
 
 def database_sources(home):
@@ -923,14 +986,25 @@ def main():
         return 3
     emit({"kind": "ready", "scan_started_at": scan_started_at})
     tick = 0
+    discovery_complete = True
+    healthy = True
     while True:
         time.sleep(1)
         tick += 1
         if tick % 10 == 0:
-            discovered, _ = discover_sources(home)
-            sources.update(discovered)
+            discovered, discovery_complete = discover_sources(home)
+            if discovery_complete:
+                sources = discovered
+            else:
+                sources.update(discovered)
+        reads_complete = True
         for path in sorted(sources):
-            read_file(path, sources[path], cursors)
+            if not read_file(path, sources[path], cursors):
+                reads_complete = False
+        current_healthy = discovery_complete and reads_complete
+        if current_healthy != healthy:
+            emit({"kind": "healthy" if current_healthy else "error"})
+            healthy = current_healthy
 
 try:
     sys.exit(main())

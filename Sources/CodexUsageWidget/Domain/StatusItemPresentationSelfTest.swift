@@ -175,7 +175,11 @@ enum StatusItemPresentationSelfTest {
             taskActivity: CodexTaskActivitySnapshot(
                 availability: .unavailable("remote reconnecting"),
                 runningTasks: activeTaskSnapshot.runningTasks,
-                recentCompletions: []
+                recentCompletions: [],
+                sourceCoverage: [
+                    CodexTaskSourceCoverage(sourceLabel: "本地", availability: .ready, lastSuccessfulReadAt: now),
+                    CodexTaskSourceCoverage(sourceLabel: "remote", availability: .unavailable("reconnecting"), lastSuccessfulReadAt: nil)
+                ]
             ),
             now: now
         )

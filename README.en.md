@@ -12,7 +12,7 @@ CodexS (Codex Secretary) is a local-first macOS menu bar and Windows tray app. I
 - Optional SSH task monitoring that follows the ChatGPT desktop app on macOS and Windows. CodexS no longer stores or depends on fixed host names: it accepts only SSH processes whose ancestry belongs to ChatGPT. It follows a host after ChatGPT connects and stops the corresponding connection and retries within about five seconds after ChatGPT disconnects. Manual refresh also rediscovers ChatGPT connections first and never starts SSH when none exist. On macOS, CodexS first reuses a live same-user OpenSSH control connection and otherwise opens an isolated, non-persistent channel.
 - Reset countdowns, used/remaining display modes, and multiple menu bar densities.
 - Today, last-7-days, and lifetime token totals with uncached input, cached input, and output splits.
-- A daily task board derived from local Codex threads and enabled automations. Conversation progress is estimated as `archived today / today's conversation tasks`; automations are excluded from completion.
+- On macOS, the board and menu share task events: running, ended awaiting review, interrupted, or unknown. Archival and thread recency no longer imply execution status. Source health and last successful reads are exposed.
 - Quota pace guidance compares elapsed window time with used quota and labels it roomy, on pace, or fast; it does not predict an absolute token allowance.
 - Optional local alerts at 20%, 10%, and 5% remaining; off by default and emitted at most once per threshold per reset cycle.
 - Official reset-credit count and per-item expiry from `rateLimitResetCredits.availableCount` and each backend-provided `expiresAt` value.
@@ -127,3 +127,13 @@ CodexS is not an official OpenAI product. The current Codex quota interface expo
 ## License
 
 MIT. See [LICENSE](LICENSE). This project includes MIT-licensed code from [shanggqm/codexU](https://github.com/shanggqm/codexU) and preserves the original copyright notice.
+
+## Quota and statistics integrity
+
+macOS polls quota independently every 60 seconds while visible or running tasks, and every 3 minutes while idle. Manual refresh starts immediately and merges busy clicks into one follow-up query. Statistics cannot roll quota back through time zone caches.
+
+Quota distinguishes RPC, local history and retained results with separate query, receipt and original observation times. History is limited to 15 minutes and a valid reset cycle, is explicitly account-unverified, and never triggers quota alerts. Failed queries retain results only for verified matching account and data directory.
+
+Daily tokens use session event deltas; missing evidence is unknown rather than thread lifetime totals. Log coverage is separate from precision. Tools report calls without assigning session tokens or costs. Appended logs use validated incremental checkpoints. JSON dump schema v3 includes quota evidence, coverage and the build commit.
+
+macOS SSH connections preserve validated user, port and configuration arguments while retaining the isolated configuration safety boundary. Ambiguous process command lines are reported as unavailable, preserving existing observations. Run `make test-data-integrity` for shared protocol, store and isolated reader regressions.

@@ -12,7 +12,7 @@ CodexS（Codex Secretary）是一个本地优先的 macOS 菜单栏与 Windows �
 - 可选跟随 ChatGPT 桌面端监听 SSH 远程项目：不再保存或依赖固定主机名，只识别进程父子链上确属 ChatGPT 的 SSH 会话。ChatGPT 连接远程后 CodexS 自动跟随；ChatGPT 断开后，CodexS 最迟约 5 秒停止对应连接与重试。手动刷新也会先重新确认 ChatGPT 当前连接，未连接时不会发起 SSH。Mac 版优先复用已经存活的同用户 OpenSSH 控制连接；没有可复用连接时才建立隔离、非持久连接。
 - 展示额度重置时间，并支持剩余量/已用量口径和多种菜单栏密度。
 - 汇总单日、近 7 天和累计 token，细分未缓存输入、缓存输入与输出。
-- 从本机 Codex 线程和启用中的 automation 生成今日任务看板；今日对话进度按 `今日已归档对话 / 今日对话任务总数` 估算，定时任务不计入完成率。
+- macOS 主看板与菜单栏共用任务事件：显示运行、结束待检查、中断和未知；归档与线程更新时间不再推断执行状态。监听覆盖显示来源健康与最后成功读取时间。
 - 比较额度窗口已过时间与已用比例，标记“宽裕 / 正常 / 偏快”；该提示只反映使用节奏，不预测实际可用 token。
 - 可选开启 20%、10%、5% 低额度本地通知；默认关闭，每个额度重置周期的每个阈值最多提醒一次。
 - 读取官方 `rateLimitResetCredits.availableCount` 和逐项 `expiresAt`，展示可用重置次数与每项到期时间。
@@ -87,12 +87,25 @@ Windows 可在 PowerShell 中用 `Get-FileHash CodexS-<version>-windows-x64.exe 
 - Windows 版监控原生 Windows Codex 会话，也会跟随 ChatGPT 桌面端连接的、装有 Python 3 的 Linux/macOS SSH 主机；仅存在于本机 WSL 且未由 ChatGPT 通过 SSH 连接的会话暂不支持。
 - 远程主机需通过 strict known-host 校验并安装 Python 3。需要 MFA 的 Mac 跳板链路必须已有可复用的 OpenSSH 控制连接，否则批处理模式不能代填验证码，CodexS 会按退避周期显示重连状态。
 
+## 额度与统计的可信度
+
+macOS 额度独立刷新：主窗口可见或有运行任务时每 60 秒核对，空闲时每 3 分钟核对；手动刷新立即发起查询，忙时合并一次追加查询。全量统计保留原刷新周期，不阻塞额度提交。
+
+额度区显示官方 RPC、本地历史或上次结果及时间。本地候选按额度事件时间比较，只展示 15 分钟内且未跨重置的记录，并标明账户未验证；历史值不会触发额度提醒。失败后仅可保留已验证同账户、同数据目录、未过期的官方结果。拿不到账户标识时不跨请求复用旧额度。
+
+每日 token 使用 JSONL 事件增量，日志缺失时显示未知；SQLite 累计值只用于累计统计。日志覆盖与事件精度分开展示，工具仅展示调用次数，不分摊 session token 或费用。统计时区缓存不保存额度。增长日志使用验证过文件身份与追加检查点的增量缓存。
+
+`--dump-json` schema v3 提供 `quotaEvidence`、日志覆盖和 `buildCommit`。环境诊断包含实际 Codex 路径、版本和数据目录。可使用 `CODEX_HOME`、`CODEXUSAGE_HOME_OVERRIDE`、`CODEXUSAGE_CACHE_OVERRIDE` 和 `CODEXUSAGE_CODEX_EXECUTABLE` 显式指定环境；查询时间、接收时间与日志原始时间分别保留，官方响应不提供原始时间时保持未知。
+
+macOS SSH 发现兼容 `user@host`、`-l`、`-p`、`-F`，安全参数与连接参数独立传递。由于 `ps` 文本不保存 argv 引号，带空格或不能明确重建的配置参数会标为发现失败，并保留已有监听证据。
+
 ## 从源码构建
 
 需要与当前 macOS SDK 匹配的 Xcode 或 Xcode Command Line Tools：
 
 ```sh
 make build
+make test-data-integrity
 make run
 ```
 

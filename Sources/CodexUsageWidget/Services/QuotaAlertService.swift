@@ -25,7 +25,9 @@ final class QuotaAlertService {
     }
 
     func evaluate(snapshot: UsageSnapshot, enabled: Bool, language: WidgetLanguage) {
-        guard enabled, snapshot.quotaReadSucceeded else { return }
+        guard enabled, snapshot.quotaReadSucceeded,
+              snapshot.quotaEvidence?.source == .rpc,
+              snapshot.quotaEvidence?.accountIdentity != nil else { return }
         evaluate(
             kind: .fiveHour,
             label: "5h",

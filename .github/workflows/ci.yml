@@ -60,6 +60,8 @@ jobs:
           binary="build/CodexS.app/Contents/MacOS/CodexS"
           "$binary" --self-test-statistics-time-zone
           "$binary" --self-test-status-item
+          "$binary" --self-test-data-integrity
+          python3 scripts/test-data-integrity.py
           "$binary" --self-test-rate-limits
           "$binary" --self-test-runtime-reset-times
           "$binary" --self-test-runtime-provider-scopes

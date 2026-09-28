@@ -3,7 +3,8 @@ import Foundation
 func dumpJSON(_ snapshot: MultiRuntimeUsageSnapshot) {
     let codexSnapshot = snapshot.runtime(for: .codex)?.snapshot
     var object: [String: Any] = [
-        "schemaVersion": 2,
+        "schemaVersion": 3,
+        "buildCommit": Bundle.main.infoDictionary?["CodexUsageBuildCommit"] as? String ?? "unknown",
         "refreshedAt": runtimeISOString(snapshot.refreshedAt) ?? "",
         "aggregate": runtimeJSONObject(snapshot.aggregate),
         "runtimes": snapshot.runtimes.map { runtimeJSONObject($0) },
@@ -39,6 +40,18 @@ private func runtimeJSONObject(_ snapshot: UsageSnapshot) -> [String: Any] {
     object["refreshedAt"] = runtimeISOString(snapshot.refreshedAt) ?? ""
     object["quotaReadSucceeded"] = snapshot.quotaReadSucceeded
     object["messages"] = snapshot.messages
+    if let evidence = snapshot.quotaEvidence {
+        object["quotaEvidence"] = [
+            "source": evidence.source.rawValue,
+            "queriedAt": runtimeJSONValue(runtimeISOString(evidence.queriedAt)),
+            "receivedAt": runtimeJSONValue(runtimeISOString(evidence.receivedAt)),
+            "observedAt": runtimeJSONValue(runtimeISOString(evidence.observedAt)),
+            "lastOfficialSuccessAt": runtimeJSONValue(runtimeISOString(evidence.lastOfficialSuccessAt)),
+            "environment": evidence.environment,
+            "accountVerified": evidence.accountIdentity != nil && evidence.source != .localHistory,
+            "failure": runtimeJSONValue(evidence.failure)
+        ] as [String: Any]
+    }
     return object
 }
 
@@ -106,9 +119,10 @@ private func runtimeJSONObject(_ credit: RateLimitResetCredit) -> [String: Any] 
 
 private func runtimeJSONObject(_ local: LocalUsage) -> [String: Any] {
     var object: [String: Any] = [
-        "todayTokens": local.todayTokens,
-        "sevenDayTokens": local.sevenDayTokens,
+        "todayTokens": local.hasDailyTokenEvidence ? local.todayTokens as Any : NSNull(),
+        "sevenDayTokens": local.hasDailyTokenEvidence ? local.sevenDayTokens as Any : NSNull(),
         "lifetimeTokens": local.lifetimeTokens,
+        "coverage": ["parsedSources": local.parsedSourceCount, "totalSources": local.totalSourceCount, "complete": local.parsedSourceCount == local.totalSourceCount],
         "threadCount": local.threadCount,
         "lastUpdatedAt": runtimeJSONValue(runtimeISOString(local.lastUpdatedAt)),
         "dailyBuckets": local.dailyBuckets.map { bucket in

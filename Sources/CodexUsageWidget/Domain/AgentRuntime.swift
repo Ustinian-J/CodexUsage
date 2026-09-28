@@ -110,7 +110,7 @@ struct RuntimeUsageSnapshot: Identifiable, Equatable {
     var todayTokens: Int64? {
         preferredRuntimeTodayTokens(
             detailed: snapshot.local?.detailedUsage?.today.tokens.visibleTotalTokens,
-            fallback: snapshot.local?.todayTokens
+            fallback: snapshot.local?.hasDailyTokenEvidence == true ? snapshot.local?.todayTokens : nil
         )
     }
 
@@ -140,6 +140,20 @@ struct RuntimeUsageSnapshot: Identifiable, Equatable {
 }
 
 enum RuntimeQuotaContinuity {
+    private static func sameCodexAccount(_ old: UsageSnapshot, _ next: UsageSnapshot) -> Bool {
+        guard let oldEvidence = old.quotaEvidence, let newEvidence = next.quotaEvidence,
+              let oldIdentity = oldEvidence.accountIdentity, let newIdentity = newEvidence.accountIdentity
+        else { return false }
+        return oldIdentity == newIdentity && oldEvidence.environment == newEvidence.environment
+    }
+
+    private static func retainedEvidence(_ old: QuotaEvidence?, queriedAt: Date) -> QuotaEvidence? {
+        guard let old else { return nil }
+        return QuotaEvidence(source: .retained, queriedAt: queriedAt, receivedAt: old.receivedAt,
+                             observedAt: old.observedAt, lastOfficialSuccessAt: old.lastOfficialSuccessAt,
+                             environment: old.environment, accountIdentity: old.accountIdentity, failure: "本次官方查询失败")
+    }
+
     static func reconcile(
         previous: [RuntimeUsageSnapshot],
         incoming: [RuntimeUsageSnapshot]
@@ -150,7 +164,10 @@ enum RuntimeQuotaContinuity {
             guard !next.snapshot.quotaReadSucceeded,
                   let last = previousByScope[next.scope],
                   last.status == .available || last.status == .stale,
-                  last.snapshot.fiveHourQuota != nil || last.snapshot.sevenDayQuota != nil
+                  last.snapshot.fiveHourQuota != nil || last.snapshot.sevenDayQuota != nil,
+                  next.snapshot.refreshedAt.timeIntervalSince(last.snapshot.quotaEvidence?.lastOfficialSuccessAt ?? last.snapshot.refreshedAt) <= QuotaEvidence.maximumHistoricalAge,
+                  [last.snapshot.fiveHourQuota, last.snapshot.sevenDayQuota].compactMap({ $0 }).allSatisfy({ $0.resetsAt.map { $0 > next.snapshot.refreshedAt } ?? false }),
+                  next.scope != .codex || sameCodexAccount(last.snapshot, next.snapshot)
             else {
                 return next
             }
@@ -160,7 +177,8 @@ enum RuntimeQuotaContinuity {
                 snapshot: next.snapshot.replacingQuotaWindows(
                     fiveHourQuota: last.snapshot.fiveHourQuota,
                     sevenDayQuota: last.snapshot.sevenDayQuota,
-                    quotaReadSucceeded: false
+                    quotaReadSucceeded: false,
+                    evidence: retainedEvidence(last.snapshot.quotaEvidence, queriedAt: next.snapshot.refreshedAt)
                 ),
                 status: .stale,
                 quotaSourceLabel: last.quotaSourceLabel.hasSuffix(" · stale")

@@ -162,6 +162,25 @@ enum CodexRateLimitNormalizerSelfTest {
             "a successful zero-limit response must clear the previous topology"
         )
 
+        let origin = Date(timeIntervalSince1970: 1_800_000_000)
+        func failed(identity: String?, time: Date, environment: String = "/test/.codex") -> RuntimeUsageSnapshot {
+            let evidence = QuotaEvidence(source: .unknown, queriedAt: time, receivedAt: nil, observedAt: nil,
+                lastOfficialSuccessAt: nil, environment: environment, accountIdentity: identity, failure: "test failure")
+            let snapshot = UsageSnapshot(refreshedAt: time, account: nil, limitId: "codex", limitName: nil,
+                quotaReadSucceeded: false, fiveHourQuota: nil, sevenDayQuota: nil, credits: nil,
+                cloudLifetimeTokens: nil, local: nil, taskBoard: nil, messages: [], quotaEvidence: evidence)
+            return RuntimeUsageSnapshot(scope: .codex, snapshot: snapshot, status: .unavailable,
+                quotaSourceLabel: "test", usageSourceLabel: "test")
+        }
+        for incoming in [failed(identity: "other-account", time: origin), failed(identity: nil, time: origin),
+                         failed(identity: "test-account", time: origin.addingTimeInterval(901)),
+                         failed(identity: "test-account", time: origin, environment: "/different/.codex"),
+                         failed(identity: "test-account", time: origin.addingTimeInterval(3600))] {
+            let cleared = RuntimeQuotaContinuity.reconcile(previous: [dualRuntime], incoming: [incoming])[0]
+            expect(cleared.snapshot.fiveHourQuota == nil && cleared.snapshot.sevenDayQuota == nil,
+                   "account/environment change, unknown identity, expiry and reset must clear retained windows")
+        }
+
         if failures.isEmpty {
             print("Codex rate-limit normalizer self-test passed")
             return true
@@ -177,7 +196,7 @@ enum CodexRateLimitNormalizerSelfTest {
         RateWindow(
             usedPercent: usedPercent,
             windowDurationMins: durationMins,
-            resetsAt: Date(timeIntervalSince1970: 1_800_000_000)
+            resetsAt: Date(timeIntervalSince1970: 1_800_003_600)
         )
     }
 
@@ -201,7 +220,11 @@ enum CodexRateLimitNormalizerSelfTest {
                 cloudLifetimeTokens: nil,
                 local: nil,
                 taskBoard: nil,
-                messages: []
+                messages: [],
+                quotaEvidence: QuotaEvidence(source: quotaReadSucceeded ? .rpc : .unknown,
+                    queriedAt: Date(timeIntervalSince1970: 1_800_000_000), receivedAt: nil, observedAt: nil,
+                    lastOfficialSuccessAt: Date(timeIntervalSince1970: 1_800_000_000), environment: "/test/.codex",
+                    accountIdentity: "test-account", failure: nil)
             ),
             status: status,
             quotaSourceLabel: "test",

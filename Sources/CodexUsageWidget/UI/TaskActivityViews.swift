@@ -33,6 +33,21 @@ struct TaskActivityCard: View {
                 activitySummary
             }
 
+            if !snapshot.sourceCoverage.isEmpty {
+                Text(language.text("监听覆盖 \(snapshot.sourceCoverage.filter { $0.availability == .ready }.count)/\(snapshot.sourceCoverage.count)", "Monitor coverage \(snapshot.sourceCoverage.filter { $0.availability == .ready }.count)/\(snapshot.sourceCoverage.count)"))
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                    .help(snapshot.sourceCoverage.map { source in
+                        let date = source.lastSuccessfulReadAt.map { $0.formatted(date: .omitted, time: .standard) } ?? "--"
+                        let health: String
+                        switch source.availability {
+                        case .ready: health = language.text("正常", "Ready")
+                        case let .unavailable(message): health = message
+                        default: health = language.text("连接中", "Connecting")
+                        }
+                        return "\(source.sourceLabel) · \(health) · \(date)"
+                    }.joined(separator: "\n"))
+            }
+
             switch snapshot.availability {
             case .starting:
                 compactMessage(
@@ -80,6 +95,9 @@ struct TaskActivityCard: View {
     }
 
     private var activityText: String {
+        if snapshot.availability != .ready {
+            return language.text("\(snapshot.confirmedRunningCount) 个任务执行中 · 异常来源状态未确认", "\(snapshot.confirmedRunningCount) running · unavailable sources unconfirmed")
+        }
         if snapshot.runningCount > 0, snapshot.unreadCount > 0 {
             return language.text(
                 "\(snapshot.runningCount) 个任务执行中 · \(snapshot.unreadCount) 个任务已完成待查看",
@@ -131,7 +149,9 @@ struct TaskActivityCard: View {
                 "Restoring remote monitoring · backoff level \(attempt)/\(maximum)"
             )
         case .unavailable:
-            return language.text("监控不可用", "Monitor unavailable")
+            return snapshot.isPartiallyAvailable
+                ? language.text("部分监听异常", "Some monitors unavailable")
+                : language.text("监控不可用", "Monitor unavailable")
         case .ready:
             let source = snapshot.remoteHosts.isEmpty || !snapshot.remoteMonitoringEnabled
                 ? language.text("本机", "Local")

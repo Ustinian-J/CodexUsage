@@ -12,7 +12,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly CancellationTokenSource cancellation = new();
     private Icon? currentIcon;
     private bool attentionBright = true;
-    private int quotaRefreshInProgress;
+    private readonly QuotaRefreshGate quotaRefresh = new();
 
     internal TrayApplicationContext(SingleInstance singleInstance)
     {
@@ -63,28 +63,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return menu;
     }
 
-    private async Task RefreshQuotaAsync()
+    private async Task RefreshQuotaAsync(bool manual = false)
     {
-        if (Interlocked.Exchange(ref quotaRefreshInProgress, 1) != 0) return;
-        try
+        if (!quotaRefresh.TryBegin(manual)) return;
+        bool repeat;
+        do
         {
-            var result = await quotaClient.ReadAsync(cancellation.Token);
-            monitor.SetQuota(
-                result.FiveHour,
-                result.SevenDay,
-                stale: !result.Succeeded,
-                message: result.Error);
-        }
-        finally
-        {
-            Interlocked.Exchange(ref quotaRefreshInProgress, 0);
-        }
+            try
+            {
+                if (cancellation.IsCancellationRequested) return;
+                var result = await quotaClient.ReadAsync(cancellation.Token);
+                monitor.SetQuota(result.FiveHour, result.SevenDay,
+                    stale: !result.Succeeded, message: result.Error, accountContext: result.AccountContext);
+            }
+            catch
+            {
+                if (!cancellation.IsCancellationRequested)
+                    monitor.SetQuota(null, null, stale: true,
+                        message: "Codex 额度读取失败", accountContext: null);
+            }
+            finally
+            {
+                repeat = quotaRefresh.Finish(cancellation.IsCancellationRequested);
+            }
+        } while (repeat);
     }
 
     private void RefreshFromUserAction()
     {
         monitor.RefreshRemoteMonitoring();
-        _ = RefreshQuotaAsync();
+        _ = RefreshQuotaAsync(manual: true);
     }
 
     private void SnapshotChangedFromBackgroundThread(UsageSnapshot snapshot)

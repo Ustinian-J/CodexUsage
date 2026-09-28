@@ -53,7 +53,10 @@ struct AgentUsageAggregator {
             usageTrend: nil,
             projectBoard: projectBoard,
             toolUsages: toolUsages,
-            skillUsages: skillUsages
+            skillUsages: skillUsages,
+            hasDailyTokenEvidence: locals.allSatisfy(\.hasDailyTokenEvidence),
+            parsedSourceCount: locals.reduce(0) { $0 + $1.parsedSourceCount },
+            totalSourceCount: locals.reduce(0) { $0 + $1.totalSourceCount }
         )
     }
 

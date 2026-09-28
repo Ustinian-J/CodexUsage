@@ -30,6 +30,11 @@ protocol RuntimeUsageProvider {
     var scope: RuntimeScope { get }
     func loadSnapshot(context: RuntimeLoadContext) -> RuntimeUsageSnapshot
     func loadTaskBoard(context: RuntimeLoadContext) -> TaskBoard?
+    func loadStatisticsSnapshot(context: RuntimeLoadContext) -> RuntimeUsageSnapshot
+}
+
+extension RuntimeUsageProvider {
+    func loadStatisticsSnapshot(context: RuntimeLoadContext) -> RuntimeUsageSnapshot { loadSnapshot(context: context) }
 }
 
 struct RuntimeProviderRegistry {
@@ -66,6 +71,8 @@ struct CodexRuntimeProvider: RuntimeUsageProvider {
         let status: RuntimeMenuStatus
         if snapshot.quotaReadSucceeded {
             status = .available
+        } else if snapshot.quotaEvidence?.source == .localHistory {
+            status = .stale
         } else if snapshot.local != nil {
             status = .localOnly
         } else {
@@ -76,9 +83,14 @@ struct CodexRuntimeProvider: RuntimeUsageProvider {
             scope: scope,
             snapshot: snapshot,
             status: status,
-            quotaSourceLabel: "Codex app-server + local records",
+            quotaSourceLabel: snapshot.quotaEvidence?.label ?? "当前额度未确认",
             usageSourceLabel: "Codex local state"
         )
+    }
+
+    func loadStatisticsSnapshot(context: RuntimeLoadContext) -> RuntimeUsageSnapshot {
+        RuntimeUsageSnapshot(scope: scope, snapshot: CodexUsageReader().load(context: context, includeQuota: false),
+                             status: .localOnly, quotaSourceLabel: "当前额度未确认", usageSourceLabel: "Codex local state")
     }
 
     func loadTaskBoard(context: RuntimeLoadContext) -> TaskBoard? {

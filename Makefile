@@ -3,7 +3,7 @@ DISPLAY_NAME := CodexS
 VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.1.0)
 BUILD_DIR := build
 DIST_DIR := dist
-MODULE_CACHE_DIR := $(BUILD_DIR)/module-cache
+MODULE_CACHE_DIR := $(BUILD_DIR)/module-cache-$(shell printf '%s' "$(CURDIR)" | shasum | cut -c1-12)
 APP_DIR := $(BUILD_DIR)/$(APP_NAME).app
 MACOS_DIR := $(APP_DIR)/Contents/MacOS
 RESOURCES_DIR := $(APP_DIR)/Contents/Resources
@@ -47,8 +47,10 @@ build:
 	rm -rf "$(APP_DIR)"
 	mkdir -p "$(MACOS_DIR)" "$(RESOURCES_DIR)" "$(MODULE_CACHE_DIR)"
 	cp Resources/Info.plist "$(APP_DIR)/Contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Add :CodexUsageBuildCommit string $$(git rev-parse --short=12 HEAD)$$(test -z "$$(git status --porcelain --untracked-files=no)" || echo -dirty)" "$(APP_DIR)/Contents/Info.plist"
 	cp "$(APP_ICON)" "$(RESOURCES_DIR)/"
 	cp $(RUNTIME_IMAGES) "$(RESOURCES_DIR)/"
+	cp tests/fixtures/codex-rate-limits.json "$(RESOURCES_DIR)/"
 	/usr/bin/xattr -dr com.apple.quarantine "$(APP_DIR)" 2>/dev/null || true
 	MACOSX_DEPLOYMENT_TARGET="$(DEPLOYMENT_TARGET)" swiftc $(SWIFT_OPTIMIZATION) -parse-as-library -sdk "$(SDKROOT)" -module-cache-path "$(MODULE_CACHE_DIR)" $(SWIFTC_TARGET_FLAGS) $(SWIFTC_FEATURE_FLAGS) $(SWIFT_MODULEMAP_WORKAROUND) $(SOURCES) \
 		-o "$(MACOS_DIR)/$(APP_NAME)" \
@@ -64,6 +66,10 @@ run: build
 
 probe: build
 	"$(MACOS_DIR)/$(APP_NAME)" --dump-json
+
+test-data-integrity: build
+	"$(MACOS_DIR)/$(APP_NAME)" --self-test-data-integrity
+	python3 scripts/test-data-integrity.py
 
 test-rate-limits:
 	./scripts/test-rate-limits.sh

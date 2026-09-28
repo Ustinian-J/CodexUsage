@@ -118,12 +118,146 @@ internal static class SelfTestRunner
                    && !CodexSessionMonitor.ShouldPublishRemoteEventImmediately(TaskEventOrigin.Recovery),
                 "remote replay must batch snapshots until ready");
 
+            using var initializationError = JsonDocument.Parse("""
+                {"id":1,"error":{"code":-1,"message":"failed"},"result":{}}
+                """);
+            using var initializationSuccess = JsonDocument.Parse("""{"id":1,"result":{}}""");
+            Expect(!CodexAppServerClient.InitializationSucceeded(initializationError.RootElement)
+                   && CodexAppServerClient.InitializationSucceeded(initializationSuccess.RootElement),
+                "initialize errors must stop the handshake before account requests");
+
+            using var quotaFixtures = JsonDocument.Parse(File.ReadAllText(
+                Path.Combine(AppContext.BaseDirectory, "fixtures", "codex-rate-limits.json")));
+            var sharedQuotaState = new QuotaState();
+            foreach (var fixture in quotaFixtures.RootElement.EnumerateArray())
+            {
+                var parsed = CodexAppServerClient.ParseWindows(fixture.GetProperty("response"));
+                var expectedFive = fixture.GetProperty("fiveRemaining");
+                var expectedSeven = fixture.GetProperty("sevenRemaining");
+                Expect(parsed.Valid == fixture.GetProperty("valid").GetBoolean()
+                       && parsed.Five?.RemainingPercent == (expectedFive.ValueKind == JsonValueKind.Null
+                           ? (double?)null : expectedFive.GetDouble())
+                       && parsed.Seven?.RemainingPercent == (expectedSeven.ValueKind == JsonValueKind.Null
+                           ? (double?)null : expectedSeven.GetDouble()),
+                    "shared quota fixture: " + fixture.GetProperty("name").GetString());
+                if (parsed.Valid)
+                {
+                    sharedQuotaState.Update(parsed.Five, parsed.Seven, false, null, "fixture-account",
+                        DateTimeOffset.FromUnixTimeSeconds(1_800_000_000));
+                    Expect(sharedQuotaState.FiveHour == parsed.Five && sharedQuotaState.SevenDay == parsed.Seven
+                           && !sharedQuotaState.Stale,
+                        "shared authoritative fixtures must replace all cached windows in sequence");
+                }
+            }
+
             using var rateDocument = JsonDocument.Parse("""
                 {"rateLimitsByLimitId":{"codex":{"secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":1800007200},"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1800003600}}}}
                 """);
             var windows = CodexAppServerClient.ParseWindows(rateDocument.RootElement);
-            Expect(windows.Five?.RemainingPercent == 90, "5h quota classification");
+            Expect(windows.Valid && windows.Five?.RemainingPercent == 90, "5h quota classification");
             Expect(windows.Seven?.RemainingPercent == 75, "7d quota classification independent of order");
+
+            using var unknownDuration = JsonDocument.Parse("""
+                {"rateLimits":{"primary":{"usedPercent":1},"secondary":{"usedPercent":11}}}
+                """);
+            var unknownWindows = CodexAppServerClient.ParseWindows(unknownDuration.RootElement);
+            Expect(!unknownWindows.Valid && unknownWindows.Five is null && unknownWindows.Seven is null,
+                "unknown durations must not be guessed from primary/secondary position");
+            foreach (var invalidQuota in new[] {
+                """{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300},"secondary":{"usedPercent":10,"windowDurationMins":60}}}""",
+                """{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300},"secondary":{"usedPercent":10,"windowDurationMins":300}}}""",
+                """{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300},"secondary":"malformed"}}""",
+                """{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300},"secondary":{"windowDurationMins":10080}}}""",
+                """{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":"invalid"},"secondary":null}}""",
+                """{"rateLimitsByLimitId":{"other":{}},"rateLimits":{"primary":null,"secondary":null}}"""
+            })
+            {
+                using var malformedQuota = JsonDocument.Parse(invalidQuota);
+                var parsedQuota = CodexAppServerClient.ParseWindows(malformedQuota.RootElement);
+                Expect(!parsedQuota.Valid && parsedQuota.Five is null && parsedQuota.Seven is null,
+                    "malformed or unknown window topology must fail as a whole");
+            }
+            using var unlimitedDocument = JsonDocument.Parse("""
+                {"rateLimits":{"primary":null,"secondary":null}}
+                """);
+            var unlimited = CodexAppServerClient.ParseWindows(unlimitedDocument.RootElement);
+            Expect(unlimited.Valid && unlimited.Five is null && unlimited.Seven is null
+                   && new QuotaReadResult(null, null, null, "account", Authoritative: true).Succeeded
+                   && !new QuotaReadResult(new QuotaWindow(99, null), null, null).Succeeded,
+                "authoritative success must be explicit and allow null windows");
+            using var oneWindowDocument = JsonDocument.Parse("""
+                {"rateLimits":{"primary":null,"secondary":{"usedPercent":10,"windowDurationMins":300}}}
+                """);
+            Expect(CodexAppServerClient.ParseWindows(oneWindowDocument.RootElement).Valid,
+                "one explicitly null and one known window must remain valid");
+            using var accountDocument = JsonDocument.Parse("""
+                {"account":{"type":"chatgpt","email":"test@example.invalid","planType":"plus"}}
+                """);
+            using var loggedOut = JsonDocument.Parse("""{"account":null}""");
+            var accountContext = CodexAppServerClient.AccountContext(accountDocument.RootElement);
+            Expect(accountContext is { Length: 64 }
+                   && !accountContext.Contains("test@example.invalid")
+                   && CodexAppServerClient.AccountContext(loggedOut.RootElement) is null,
+                "quota context must require a known signed-in account and retain only its digest");
+            using var changedPlanDocument = JsonDocument.Parse("""
+                {"account":{"planType":"pro","email":"test@example.invalid","type":"chatgpt"}}
+                """);
+            Expect(accountContext == CodexAppServerClient.AccountContext(changedPlanDocument.RootElement),
+                "plan changes and JSON field order must not change account identity");
+            var quotaTime = DateTimeOffset.UtcNow;
+            var quota = new QuotaState();
+            var five = new QuotaWindow(89, quotaTime.AddMinutes(5));
+            var seven = new QuotaWindow(75, quotaTime.AddDays(1));
+            quota.Update(five, seven, false, null, accountContext, quotaTime);
+            quota.Update(five with { RemainingPercent = 88 }, null, false, null,
+                accountContext, quotaTime.AddSeconds(1));
+            Expect(quota.SevenDay is null && quota.FiveHour?.RemainingPercent == 88 && !quota.Stale,
+                "successful partial responses must remove obsolete windows");
+            quota.Update(null, null, true, "read failed", accountContext, quotaTime.AddMinutes(1));
+            Expect(quota.FiveHour?.RemainingPercent == 88 && quota.Stale,
+                "same-account failure may retain recent quota only as stale");
+            quota.Expire(quotaTime.AddMinutes(5));
+            Expect(quota.FiveHour is null && quota.Stale,
+                "quota cache must be cleared at the exact reset boundary");
+            quota.Update(null, seven, false, null, accountContext, quotaTime);
+            quota.Expire(quotaTime + QuotaState.MaximumAge);
+            Expect(quota.SevenDay is null && quota.Stale,
+                "quota cache must expire at the exact maximum age");
+            quota.Update(five, seven, false, null, accountContext, quotaTime);
+            quota.Update(null, null, true, "account changed", "different-account", quotaTime.AddSeconds(1));
+            Expect(quota.FiveHour is null && quota.SevenDay is null && quota.Stale,
+                "account changes must not reuse old quota");
+            quota.Update(five, seven, false, null, accountContext, quotaTime);
+            quota.Update(null, null, true, "account unknown", null, quotaTime.AddSeconds(1));
+            Expect(quota.FiveHour is null && quota.SevenDay is null,
+                "unverified accounts must not reuse quota");
+
+            quota.Update(five, seven, false, null, accountContext, quotaTime);
+            quota.Update(unlimited.Five, unlimited.Seven, false, null, accountContext, quotaTime.AddSeconds(1));
+            Expect(quota.FiveHour is null && quota.SevenDay is null && !quota.Stale,
+                "authoritative all-null windows must clear quota without becoming stale");
+
+            quota.Update(five with { ResetsAt = null }, seven with { ResetsAt = null },
+                false, null, accountContext, quotaTime);
+            Expect(quota.FiveHour is not null && quota.SevenDay is not null && !quota.Stale,
+                "current authoritative quota may display windows without reset timestamps");
+            quota.Update(null, null, true, "read failed", accountContext, quotaTime.AddSeconds(1));
+            Expect(quota.FiveHour is null && quota.SevenDay is null && quota.Stale,
+                "stale quota without reset timestamps must not be retained");
+
+            var refreshGate = new QuotaRefreshGate();
+            Expect(refreshGate.TryBegin(false) && !refreshGate.TryBegin(false),
+                "timer refreshes must not overlap or queue");
+            Expect(!refreshGate.Finish(), "timer-only overlap must not trigger another read");
+            Expect(refreshGate.TryBegin(false), "refresh gate must reopen after completion");
+            Parallel.For(0, 100, _ => Expect(!refreshGate.TryBegin(true),
+                "busy manual refresh must queue rather than start another read"));
+            Expect(refreshGate.Finish() && !refreshGate.Finish(),
+                "concurrent manual clicks must coalesce to one follow-up read");
+            Expect(refreshGate.TryBegin(true) && !refreshGate.TryBegin(true)
+                   && !refreshGate.Finish(cancelled: true) && refreshGate.TryBegin(false),
+                "cancellation must discard pending refresh and release the gate");
+            refreshGate.Finish();
 
             var now = DateTimeOffset.Now;
             var remoteScanStart = now.AddHours(-3);

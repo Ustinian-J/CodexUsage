@@ -98,8 +98,8 @@ grep -Fq 'values.isSymbolicLink != true' Sources/CodexUsageWidget/main.swift \
 if grep -Fq '"id": 4, "method": "account/usage/read"' Sources/CodexUsageWidget/main.swift; then
   fail "quota reader must not request the unrelated slow cloud usage profile"
 fi
-grep -Fq 'let grepPath = "/usr/bin/grep"' Sources/CodexUsageWidget/main.swift \
-  || fail "reviewed grep launch changed"
+grep -Fq 'checkpointHash(at: UInt64(entry.fileSize)) == fingerprint' Sources/CodexUsageWidget/main.swift \
+  || fail "incremental log reads must verify their append checkpoint"
 grep -Fq 'process.arguments = ["-readonly", "-json", dbPath, query]' Sources/CodexUsageWidget/Services/ReadOnlySQLite.swift \
   || fail "reviewed read-only SQLite launch changed"
 grep -Fq 'process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
@@ -116,11 +116,11 @@ grep -Fq 'arguments: ["-axo", "pid=,ppid=,ucomm="]' Sources/CodexUsageWidget/Ser
   || fail "ChatGPT SSH discovery must first inspect process ownership without unrelated command lines"
 grep -Fq 'allowedProcessIDs.contains(processID)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
   || fail "ChatGPT SSH discovery command-line phase must remain scoped to owned SSH process IDs"
-grep -Fq 'CodexBoundedPipeCollector(maximumBytes: maximumOutputBytes)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+grep -Fq 'CodexBoundedPipeCollector(maximumBytes: maximumBytes)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
   || fail "ChatGPT SSH discovery output must remain bounded"
 grep -Fq 'hasAncestor(record.parentProcessID, in: chatGPTRoots' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
   || fail "remote discovery must require ChatGPT process ancestry"
-grep -Fq 'CodexRemoteHost.validated(token)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
+grep -Fq 'CodexRemoteHost.validatedDestination(token)' Sources/CodexUsageWidget/Services/ChatGPTSSHHostDiscovery.swift \
   || fail "discovered SSH hosts must pass validation"
 grep -Fq 'CodexRemoteHost.validated(host) == host' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH host validation changed"
@@ -131,8 +131,16 @@ for option in 'BatchMode=yes' 'StrictHostKeyChecking=yes' 'ServerAliveCountMax=3
 done
 grep -Fq '"-F", sshConfigPath' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "remote SSH must use the isolated config for ProxyJump children"
-grep -Fq 'process.arguments = ["-G", host]' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+grep -Fq 'process.arguments = ["-G"] + target.optionArguments + [target.destination]' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "SSH control reuse must resolve the configured alias without opening a connection"
+grep -Fq 'guard let target = CodexSSHConnection.decode(host) else { return nil }' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH config/probes must use a validated connection descriptor"
+grep -Fq 'path.hasPrefix("/")' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "custom SSH config includes must require absolute paths"
+grep -Fq 'path.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "/._-".contains($0)) })' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "custom SSH config paths must exclude whitespace, config directives and shell characters"
+grep -Fq 'arguments += (target.port.map { ["-p", String($0)] } ?? []) + [target.destination, Self.remoteCommand]' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+  || fail "SSH destination and port must remain separate validated argv"
 grep -Fq 'status.st_uid == geteuid()' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "SSH control reuse must require a socket owned by the current user"
 grep -Fq 'Darwin.symlink(source, link)' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
@@ -145,7 +153,7 @@ grep -Fq '"-O", "check"' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonito
   || fail "SSH control reuse must verify that the existing master is live"
 grep -Fq '"ControlMaster=auto"' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "SSH control reuse must opt in only for a verified existing master"
-grep -Fq 'Include ~/.ssh/config' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
+grep -Fq 'let configurationInclude = target.configurationPath ?? "~/.ssh/config"' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "isolated SSH config no longer imports validated user aliases"
 grep -Fq 'Include /etc/ssh/ssh_config' Sources/CodexUsageWidget/Services/RemoteCodexTaskMonitor.swift \
   || fail "isolated SSH config no longer imports system aliases"
@@ -185,7 +193,7 @@ grep -Fq 'static let delays: [TimeInterval] = [10, 30, 60, 120, 300]' Sources/Co
 grep -Fq 'requestRemoteHostDiscovery(forceRestartUnavailable: true)' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
   || fail "manual remote refresh must rediscover ChatGPT-owned SSH before reconnecting"
 grep -Fq 'applyDiscoveredRemoteHosts([])' Sources/CodexUsageWidget/Services/CodexTaskMonitor.swift \
-  || fail "remote monitoring must fail closed when ChatGPT SSH discovery is unavailable"
+  || fail "disabling remote monitoring must stop previously authorized connections"
 grep -Fq 'taskActivityStore.refreshRemoteMonitoring()' Sources/CodexUsageWidget/main.swift \
   || fail "manual refresh no longer reconnects authorized remote monitoring"
 grep -Fq 'taskActivityStore.start(remoteMonitoringEnabled: settings.remoteMonitoringEnabled)' Sources/CodexUsageWidget/main.swift \

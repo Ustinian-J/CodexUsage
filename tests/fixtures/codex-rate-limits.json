@@ -1,0 +1,252 @@
+[
+  {
+    "name": "dual-windows",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 10,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        },
+        "secondary": {
+          "usedPercent": 25,
+          "windowDurationMins": 10080,
+          "resetsAt": 1800007200
+        }
+      }
+    },
+    "valid": true,
+    "fiveRemaining": 90,
+    "sevenRemaining": 75
+  },
+  {
+    "name": "single-primary",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 11,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        }
+      }
+    },
+    "valid": true,
+    "fiveRemaining": 89,
+    "sevenRemaining": null
+  },
+  {
+    "name": "single-secondary",
+    "response": {
+      "rateLimits": {
+        "secondary": {
+          "usedPercent": 30,
+          "windowDurationMins": 10080,
+          "resetsAt": 1800007200
+        }
+      }
+    },
+    "valid": true,
+    "fiveRemaining": null,
+    "sevenRemaining": 70
+  },
+  {
+    "name": "all-null",
+    "response": {
+      "rateLimits": {
+        "primary": null,
+        "secondary": null
+      }
+    },
+    "valid": true,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "single-null",
+    "response": {
+      "rateLimits": {
+        "primary": null
+      }
+    },
+    "valid": true,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "missing-all-windows",
+    "response": {
+      "rateLimits": {}
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "unknown-duration",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 10,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        },
+        "secondary": {
+          "usedPercent": 25,
+          "windowDurationMins": 60,
+          "resetsAt": 1800007200
+        }
+      }
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "missing-duration",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 10
+        }
+      }
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "duplicate-duration",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 10,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        },
+        "secondary": {
+          "usedPercent": 20,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        }
+      }
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "malformed-window",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 10,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        },
+        "secondary": "invalid"
+      }
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "malformed-percent",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": "10",
+          "windowDurationMins": 300
+        }
+      }
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "malformed-reset",
+    "response": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 10,
+          "windowDurationMins": 300,
+          "resetsAt": "invalid"
+        }
+      }
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  },
+  {
+    "name": "by-id-codex",
+    "response": {
+      "rateLimitsByLimitId": {
+        "codex": {
+          "primary": {
+            "usedPercent": 25,
+            "windowDurationMins": 10080,
+            "resetsAt": 1800007200
+          },
+          "secondary": {
+            "usedPercent": 10,
+            "windowDurationMins": 300,
+            "resetsAt": 1800007200
+          }
+        }
+      }
+    },
+    "valid": true,
+    "fiveRemaining": 90,
+    "sevenRemaining": 75
+  },
+  {
+    "name": "by-id-preferred",
+    "response": {
+      "rateLimitsByLimitId": {
+        "codex": {
+          "primary": {
+            "usedPercent": 11,
+            "windowDurationMins": 300,
+            "resetsAt": 1800007200
+          }
+        }
+      },
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 1,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        }
+      }
+    },
+    "valid": true,
+    "fiveRemaining": 89,
+    "sevenRemaining": null
+  },
+  {
+    "name": "by-id-missing-codex",
+    "response": {
+      "rateLimitsByLimitId": {
+        "other": {
+          "primary": {
+            "usedPercent": 1,
+            "windowDurationMins": 300,
+            "resetsAt": 1800007200
+          }
+        }
+      },
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 1,
+          "windowDurationMins": 300,
+          "resetsAt": 1800007200
+        }
+      }
+    },
+    "valid": false,
+    "fiveRemaining": null,
+    "sevenRemaining": null
+  }
+]
