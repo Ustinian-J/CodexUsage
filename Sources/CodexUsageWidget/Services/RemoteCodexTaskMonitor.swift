@@ -81,8 +81,9 @@ enum CodexRemoteHost {
 
 enum RemoteCodexTaskMonitorUpdate {
     case events([CodexTaskEvent], CodexTaskEventOrigin)
+    case excludedThread(String)
     case connecting(Int, Int)
-    case ready(Date)
+    case ready(Date, confirmed: Set<String>)
     case unavailable(String)
 }
 
@@ -110,6 +111,24 @@ struct RemoteConnectionBackoff {
     }
 }
 
+// Receipt time is local and monotonic; remote wall-clock changes cannot keep a
+// stalled reader healthy. Only a completed scan renews this deadline.
+struct RemoteCodexFreshness {
+    static let initialScanTimeout: TimeInterval = 120
+    static let heartbeatTimeout: TimeInterval = 35
+    private(set) var deadline: TimeInterval = 0
+
+    mutating func begin(at uptime: TimeInterval) {
+        deadline = uptime + Self.initialScanTimeout
+    }
+
+    mutating func confirm(at uptime: TimeInterval) {
+        deadline = uptime + Self.heartbeatTimeout
+    }
+
+    func isExpired(at uptime: TimeInterval) -> Bool { uptime >= deadline }
+}
+
 struct RemoteCodexTaskEnvelope: Decodable {
     let kind: String
     let event: String?
@@ -119,6 +138,12 @@ struct RemoteCodexTaskEnvelope: Decodable {
     let title: String?
     let projectName: String?
     let scanStartedAt: Double?
+    let confirmedTasks: [TaskReference]?
+
+    struct TaskReference: Decodable {
+        let thread_id: String
+        let turn_id: String
+    }
 
     enum CodingKeys: String, CodingKey {
         case kind
@@ -129,6 +154,7 @@ struct RemoteCodexTaskEnvelope: Decodable {
         case title
         case projectName = "project_name"
         case scanStartedAt = "scan_started_at"
+        case confirmedTasks = "confirmed_tasks"
     }
 
     static func parse(line: Data, host: String) -> CodexTaskEvent? {
@@ -162,11 +188,22 @@ struct RemoteCodexTaskEnvelope: Decodable {
     }
 
     var scanWatermark: Date? {
-        guard kind == "scan_started" || kind == "ready",
+        guard kind == "scan_started" || kind == "ready" || kind == "healthy",
               let scanStartedAt,
               let watermark = CodexTaskTimestamp.date(unixTime: scanStartedAt)
         else { return nil }
         return watermark
+    }
+
+    var confirmedIdentities: Set<String>? {
+        guard let confirmedTasks else { return nil }
+        var identities = Set<String>()
+        for task in confirmedTasks {
+            guard let threadID = CodexTaskIdentifier.validated(task.thread_id),
+                  let turnID = CodexTaskIdentifier.validated(task.turn_id) else { return nil }
+            identities.insert(CodexTaskEvent.stableIdentity(turnID: turnID, threadID: threadID))
+        }
+        return identities
     }
 }
 
@@ -222,6 +259,8 @@ final class RemoteCodexTaskMonitor {
     private let probeQueue: DispatchQueue
     private var process: Process?
     private var restartWorkItem: DispatchWorkItem?
+    private var freshnessTimer: DispatchSourceTimer?
+    private var freshness = RemoteCodexFreshness()
     private var lineBuffer = CodexJSONLineBuffer()
     private var replayWindow: RemoteCodexReplayWindow?
     private var recoveryCheckpoint: Date?
@@ -256,6 +295,8 @@ final class RemoteCodexTaskMonitor {
             self.connectionBackoff.reset()
             self.restartWorkItem?.cancel()
             self.restartWorkItem = nil
+            self.freshnessTimer?.cancel()
+            self.freshnessTimer = nil
             self.terminateSSHChild()
             self.launch()
         }
@@ -268,6 +309,8 @@ final class RemoteCodexTaskMonitor {
             self.connectionGeneration += 1
             self.restartWorkItem?.cancel()
             self.restartWorkItem = nil
+            self.freshnessTimer?.cancel()
+            self.freshnessTimer = nil
             self.terminateSSHChild()
             self.lineBuffer.reset()
             self.replayWindow = nil
@@ -374,6 +417,7 @@ final class RemoteCodexTaskMonitor {
                       self.authorizationGeneration == authorization,
                       self.connectionGeneration == connection
                 else { return }
+                guard self.process != nil else { return }
                 self.consume(data)
             }
         }
@@ -401,6 +445,7 @@ final class RemoteCodexTaskMonitor {
         do {
             try process.run()
             self.process = process
+            startFreshnessWatchdog(connection: connection)
         } catch {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
@@ -418,6 +463,9 @@ final class RemoteCodexTaskMonitor {
                 debugLog("remote SSH protocol event: \(envelope.kind)")
             }
             switch envelope.kind {
+            case "excluded_thread":
+                guard let threadID = CodexTaskIdentifier.validated(envelope.threadID) else { continue }
+                onUpdate(.excludedThread(threadID))
             case "scan_started":
                 guard replayWindow == nil,
                       !streamReady,
@@ -452,49 +500,77 @@ final class RemoteCodexTaskMonitor {
                 }
             case "ready":
                 guard let readyWatermark = envelope.scanWatermark,
+                      let confirmed = envelope.confirmedIdentities,
                       let replayWindow,
                       replayWindow.acceptsReady(watermark: readyWatermark)
                 else {
                     failProtocol("远程任务主机 \(CodexRemoteHost.displayName(host)) 返回了不一致的扫描水位线")
                     return
                 }
-                finishReplay(scanStartedAt: readyWatermark)
+                finishReplay(scanStartedAt: readyWatermark, confirmed: confirmed)
             case "healthy":
-                guard streamReady else { continue }
-                onUpdate(.ready(recoveryCheckpoint ?? Date()))
+                guard streamReady,
+                      let checkpoint = envelope.scanWatermark,
+                      let confirmed = envelope.confirmedIdentities else {
+                    failProtocol("远程任务主机 \(CodexRemoteHost.displayName(host)) 返回了无效的采集心跳")
+                    return
+                }
+                confirmScan(checkpoint: checkpoint, confirmed: confirmed)
             case "error":
-                onUpdate(.unavailable("远程任务主机 \(CodexRemoteHost.displayName(host)) 未找到可读的 Codex 会话"))
+                onUpdate(.unavailable("远程任务主机 \(CodexRemoteHost.displayName(host)) 暂时无法完整读取任务记录"))
             default:
                 continue
             }
         }
     }
 
-    private func finishReplay(scanStartedAt: Date) {
+    private func finishReplay(scanStartedAt: Date, confirmed: Set<String>) {
         streamReady = true
         readyAtUptime = ProcessInfo.processInfo.systemUptime
         replayWindow = nil
-        recoveryCheckpoint = scanStartedAt
-        onUpdate(.ready(scanStartedAt))
+        confirmScan(checkpoint: scanStartedAt, confirmed: confirmed)
+    }
+
+    private func confirmScan(checkpoint: Date, confirmed: Set<String>) {
+        freshness.confirm(at: ProcessInfo.processInfo.systemUptime)
+        recoveryCheckpoint = checkpoint
+        onUpdate(.ready(checkpoint, confirmed: confirmed))
+    }
+
+    private func startFreshnessWatchdog(connection: Int) {
+        freshnessTimer?.cancel()
+        freshness.begin(at: ProcessInfo.processInfo.systemUptime)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.stopped, self.connectionGeneration == connection,
+                  self.process != nil,
+                  self.freshness.isExpired(at: ProcessInfo.processInfo.systemUptime) else { return }
+            self.failProtocol("远程任务主机 \(CodexRemoteHost.displayName(self.host)) 采集状态已过期")
+        }
+        freshnessTimer = timer
+        timer.resume()
     }
 
     private func failProtocol(_ message: String) {
-        onUpdate(.unavailable(message))
-        connectionGeneration += 1
-        process?.terminate()
+        terminateSSHChild()
+        removeReusableSSHControlLink()
+        handleConnectionFailure(reason: message)
     }
 
-    private func handleConnectionFailure() {
+    private func handleConnectionFailure(reason: String? = nil) {
         guard !stopped else { return }
+        connectionGeneration += 1
+        freshnessTimer?.cancel()
+        freshnessTimer = nil
         let readyDuration = readyAtUptime.map {
             max(0, ProcessInfo.processInfo.systemUptime - $0)
         }
         streamReady = false
         readyAtUptime = nil
         let delay = connectionBackoff.recordFailure(readyDuration: readyDuration)
-        onUpdate(.unavailable(
-            "远程任务主机 \(CodexRemoteHost.displayName(host)) 连接中断，\(Self.retryDelayText(delay))后自动重试"
-        ))
+        let reason = reason ?? "远程任务主机 \(CodexRemoteHost.displayName(host)) 连接中断"
+        onUpdate(.unavailable("\(reason)，\(Self.retryDelayText(delay))后自动重试"))
         scheduleRestart(after: delay)
     }
 
@@ -521,6 +597,8 @@ final class RemoteCodexTaskMonitor {
     private func terminateSSHChild() {
         guard let process else { return }
         process.terminationHandler = nil
+        (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+        (process.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
         if process.isRunning {
             process.terminate()
             let deadline = ProcessInfo.processInfo.systemUptime + 0.5
@@ -749,6 +827,7 @@ import time
 
 MAX_LINE_BYTES = 8 * 1024 * 1024
 MAX_ID_BYTES = 512
+reported_internal_threads = set()
 
 def emit(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
@@ -760,6 +839,21 @@ def compact(value):
 
 def valid_id(value):
     return isinstance(value, str) and 0 < len(value.encode("utf-8")) <= MAX_ID_BYTES
+
+def is_internal(thread_source, source):
+    if thread_source in ("subagent", "guardian_review"):
+        return True
+    if isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except (ValueError, TypeError):
+            return False
+    return isinstance(source, dict) and "subagent" in source
+
+def exclude_thread(thread_id):
+    if valid_id(thread_id) and thread_id not in reported_internal_threads:
+        reported_internal_threads.add(thread_id)
+        emit({"kind": "excluded_thread", "thread_id": thread_id})
 
 def project_name(path):
     if not isinstance(path, str):
@@ -813,7 +907,9 @@ def fallback_source(path):
                     session_id = candidate_id
                 project = project_name(payload.get("cwd"))
                 source = payload.get("source")
-                is_subagent = payload.get("thread_source") == "subagent" or isinstance(source, dict) and "subagent" in source
+                is_subagent = is_internal(payload.get("thread_source"), source)
+                if is_subagent:
+                    exclude_thread(session_id)
                 break
     except OSError:
         return None, False
@@ -846,11 +942,13 @@ def database_sources(home):
             created = "created_at * 1000"
         else:
             created = "0"
-        source_filter = " AND (thread_source IS NULL OR thread_source <> 'subagent')" if "thread_source" in columns else ""
-        query = "SELECT id, rollout_path, " + selected("title", "title") + ", " + selected("cwd", "cwd") + ", " + created + " AS created_ms FROM threads WHERE rollout_path IS NOT NULL AND rollout_path <> ''" + source_filter
+        query = "SELECT id, rollout_path, " + selected("title", "title") + ", " + selected("cwd", "cwd") + ", " + created + " AS created_ms, " + selected("thread_source", "thread_source") + ", " + selected("source", "source") + " FROM threads WHERE rollout_path IS NOT NULL AND rollout_path <> ''"
         result = []
         complete = True
-        for thread_id, path, title, cwd, created_ms in connection.execute(query):
+        for thread_id, path, title, cwd, created_ms, thread_source, source in connection.execute(query):
+            if is_internal(thread_source, source):
+                exclude_thread(thread_id)
+                continue
             if not valid_id(thread_id) or not isinstance(path, str) or not path:
                 continue
             try:
@@ -895,7 +993,7 @@ def discover_sources(home):
             sources[row[0]] = row[1:]
     return sources, complete
 
-def process_line(line, metadata):
+def process_line(line, metadata, cursor):
     if b"task_started" not in line and b"task_complete" not in line and b"turn_aborted" not in line:
         return
     try:
@@ -919,6 +1017,10 @@ def process_line(line, metadata):
     thread_id, title, project, created = metadata
     if occurred is None or occurred + 1 < created:
         return
+    if event_type == "task_started":
+        cursor["active_turn"] = turn_id
+    elif cursor.get("active_turn") == turn_id:
+        cursor.pop("active_turn", None)
     emit({
         "kind": "event",
         "event": {"task_started": "started", "task_complete": "completed", "turn_aborted": "aborted"}[event_type],
@@ -935,6 +1037,8 @@ def read_file(path, metadata, cursors):
         cursor = cursors.get(path, {"offset": 0, "inode": stat.st_ino, "partial": b"", "discarding": False})
         if stat.st_size < cursor["offset"] or stat.st_ino != cursor["inode"]:
             cursor = {"offset": 0, "inode": stat.st_ino, "partial": b"", "discarding": False}
+        cursor["thread_id"] = metadata[0]
+        cursor["mtime"] = stat.st_mtime
         if stat.st_size == cursor["offset"]:
             cursors[path] = cursor
             return True
@@ -958,13 +1062,70 @@ def read_file(path, metadata, cursors):
                     cursor["discarding"] = not completed
                     continue
                 if completed:
-                    process_line(data[:-1], metadata)
+                    process_line(data[:-1], metadata, cursor)
                 else:
                     cursor["partial"] = data
         cursors[path] = cursor
     except OSError:
         return False
     return True
+
+def open_rollout_paths(candidates):
+    # Linux hosts expose open rollout handles without launching another process.
+    # If the probe is unavailable, quiet tasks remain unknown, never completed.
+    if not candidates:
+        return set(), True
+    opened = set()
+    complete = True
+    try:
+        with os.scandir("/proc") as processes:
+            for process in processes:
+                if not process.name.isdigit():
+                    continue
+                try:
+                    if process.stat().st_uid != os.geteuid():
+                        continue
+                    with os.scandir(os.path.join(process.path, "fd")) as handles:
+                        for handle in handles:
+                            try:
+                                path = os.readlink(handle.path)
+                                if path in candidates:
+                                    opened.add(path)
+                            except FileNotFoundError:
+                                pass
+                            except OSError:
+                                complete = False
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    complete = False
+    except OSError:
+        complete = False
+    return opened, complete
+
+def confirmed_tasks(sources, cursors, closed_samples, now):
+    paths_by_task = {}
+    for path, cursor in cursors.items():
+        turn = cursor.get("active_turn")
+        if turn:
+            paths_by_task.setdefault((cursor["thread_id"], turn), []).append(path)
+    quiet_paths = {path for paths in paths_by_task.values() for path in paths
+                   if path in sources and now - cursors[path]["mtime"] >= 30}
+    opened, probe_complete = open_rollout_paths(quiet_paths)
+    confirmed = []
+    for task, paths in paths_by_task.items():
+        has_evidence = any(path in sources and (path in opened or now - cursors[path]["mtime"] < 30)
+                           for path in paths)
+        if has_evidence:
+            closed_samples.pop(task, None)
+        else:
+            closed_samples[task] = closed_samples.get(task, 0) + 1
+        if has_evidence or (probe_complete and closed_samples[task] < 2):
+            confirmed.append({"thread_id": task[0], "turn_id": task[1]})
+    for task in list(closed_samples):
+        if task not in paths_by_task:
+            del closed_samples[task]
+    return confirmed
 
 def main():
     home = discover_home()
@@ -984,7 +1145,9 @@ def main():
     if not initial_complete:
         emit({"kind": "error"})
         return 3
-    emit({"kind": "ready", "scan_started_at": scan_started_at})
+    closed_samples = {}
+    emit({"kind": "ready", "scan_started_at": scan_started_at,
+          "confirmed_tasks": confirmed_tasks(sources, cursors, closed_samples, time.time())})
     tick = 0
     discovery_complete = True
     healthy = True
@@ -992,6 +1155,9 @@ def main():
         time.sleep(1)
         tick += 1
         if tick % 10 == 0:
+            # The checkpoint precedes discovery and reads, so reconnect replay
+            # cannot skip a task created during the completed scan.
+            scan_started_at = time.time()
             discovered, discovery_complete = discover_sources(home)
             if discovery_complete:
                 sources = discovered
@@ -1002,9 +1168,12 @@ def main():
             if not read_file(path, sources[path], cursors):
                 reads_complete = False
         current_healthy = discovery_complete and reads_complete
-        if current_healthy != healthy:
-            emit({"kind": "healthy" if current_healthy else "error"})
-            healthy = current_healthy
+        if not current_healthy and healthy:
+            emit({"kind": "error"})
+        if tick % 10 == 0 and current_healthy:
+            emit({"kind": "healthy", "scan_started_at": scan_started_at,
+                  "confirmed_tasks": confirmed_tasks(sources, cursors, closed_samples, time.time())})
+        healthy = current_healthy
 
 try:
     sys.exit(main())

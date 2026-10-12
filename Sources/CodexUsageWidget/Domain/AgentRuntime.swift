@@ -147,11 +147,11 @@ enum RuntimeQuotaContinuity {
         return oldIdentity == newIdentity && oldEvidence.environment == newEvidence.environment
     }
 
-    private static func retainedEvidence(_ old: QuotaEvidence?, queriedAt: Date) -> QuotaEvidence? {
+    private static func retainedEvidence(_ old: QuotaEvidence?, queriedAt: Date, failure: String?) -> QuotaEvidence? {
         guard let old else { return nil }
         return QuotaEvidence(source: .retained, queriedAt: queriedAt, receivedAt: old.receivedAt,
                              observedAt: old.observedAt, lastOfficialSuccessAt: old.lastOfficialSuccessAt,
-                             environment: old.environment, accountIdentity: old.accountIdentity, failure: "本次官方查询失败")
+                             environment: old.environment, accountIdentity: old.accountIdentity, failure: failure ?? "本次官方查询失败")
     }
 
     static func reconcile(
@@ -166,24 +166,31 @@ enum RuntimeQuotaContinuity {
                   last.status == .available || last.status == .stale,
                   last.snapshot.fiveHourQuota != nil || last.snapshot.sevenDayQuota != nil,
                   next.snapshot.refreshedAt.timeIntervalSince(last.snapshot.quotaEvidence?.lastOfficialSuccessAt ?? last.snapshot.refreshedAt) <= QuotaEvidence.maximumHistoricalAge,
-                  [last.snapshot.fiveHourQuota, last.snapshot.sevenDayQuota].compactMap({ $0 }).allSatisfy({ $0.resetsAt.map { $0 > next.snapshot.refreshedAt } ?? false }),
                   next.scope != .codex || sameCodexAccount(last.snapshot, next.snapshot)
             else {
                 return next
             }
 
+            func unexpired(_ window: RateWindow?) -> RateWindow? {
+                guard let window, let reset = window.resetsAt, reset > next.snapshot.refreshedAt else { return nil }
+                return window
+            }
+            let fiveHour = unexpired(last.snapshot.fiveHourQuota)
+            let sevenDay = unexpired(last.snapshot.sevenDayQuota)
+            guard fiveHour != nil || sevenDay != nil else { return next }
+            let evidence = retainedEvidence(last.snapshot.quotaEvidence, queriedAt: next.snapshot.refreshedAt,
+                                            failure: next.snapshot.quotaEvidence?.failure)
+
             return RuntimeUsageSnapshot(
                 scope: next.scope,
                 snapshot: next.snapshot.replacingQuotaWindows(
-                    fiveHourQuota: last.snapshot.fiveHourQuota,
-                    sevenDayQuota: last.snapshot.sevenDayQuota,
+                    fiveHourQuota: fiveHour,
+                    sevenDayQuota: sevenDay,
                     quotaReadSucceeded: false,
-                    evidence: retainedEvidence(last.snapshot.quotaEvidence, queriedAt: next.snapshot.refreshedAt)
+                    evidence: evidence
                 ),
                 status: .stale,
-                quotaSourceLabel: last.quotaSourceLabel.hasSuffix(" · stale")
-                    ? last.quotaSourceLabel
-                    : "\(last.quotaSourceLabel) · stale",
+                quotaSourceLabel: evidence?.label ?? "上次结果 · 待更新",
                 usageSourceLabel: next.usageSourceLabel
             )
         }

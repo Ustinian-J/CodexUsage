@@ -6,3 +6,4 @@ cd "$ROOT_DIR"
 
 make build
 build/CodexS.app/Contents/MacOS/CodexS --self-test-task-activity
+python3 scripts/test-remote-task-filter.py

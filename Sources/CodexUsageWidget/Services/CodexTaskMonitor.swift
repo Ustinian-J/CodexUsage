@@ -244,6 +244,7 @@ final class CodexTaskActivityStore: ObservableObject {
     private var remoteMonitorIDs: [String: UUID] = [:]
     private var remoteCheckpoints: [String: Date]
     private var lastSuccessfulReadBySource: [String: Date] = [:]
+    private var unconfirmedTasksBySource: [String: Set<String>] = [:]
     private var sourceAvailability: [String: CodexTaskMonitorAvailability] = ["local": .starting]
     private var activeRemoteHosts: [String] = []
     private var remoteMonitoringEnabled = false
@@ -303,6 +304,7 @@ final class CodexTaskActivityStore: ObservableObject {
         activeRemoteHosts = []
         stopRemoteDiscovery()
         sourceAvailability = ["local": .starting]
+        unconfirmedTasksBySource.removeAll()
     }
 
     func setRemoteMonitoringEnabled(_ enabled: Bool) {
@@ -335,6 +337,8 @@ final class CodexTaskActivityStore: ObservableObject {
 
     private func handleLocal(_ update: CodexTaskMonitorUpdate) {
         switch update {
+        case let .excludedThreads(threadIDs):
+            if reducer.removeInternalThreads(threadIDs, sourceLabel: nil) { publishAndPersist() }
         case let .events(events, origin):
             var changed = false
             var completions: [CodexTaskCompletion] = []
@@ -381,6 +385,8 @@ final class CodexTaskActivityStore: ObservableObject {
         }) else { return }
         let sourceID = "remote:\(key)"
         switch update {
+        case let .excludedThread(threadID):
+            if reducer.removeInternalThreads([threadID], sourceLabel: CodexRemoteHost.displayName(host)) { publishAndPersist() }
         case let .events(events, origin):
             var changed = false
             var completions: [CodexTaskCompletion] = []
@@ -396,10 +402,14 @@ final class CodexTaskActivityStore: ObservableObject {
             sourceAvailability[sourceID] = .connecting(attempt, maximum)
             publishAndPersist()
 
-        case let .ready(checkpoint):
+        case let .ready(checkpoint, confirmed):
             remoteCheckpoints[host.lowercased()] = checkpoint
             remoteCheckpointPersistence.save(remoteCheckpoints)
             lastSuccessfulReadBySource[sourceID] = Date()
+            let runningIDs = Set(snapshot.runningTasks.filter {
+                $0.sourceLabel == CodexRemoteHost.displayName(host)
+            }.map(\.id))
+            unconfirmedTasksBySource[sourceID] = runningIDs.subtracting(confirmed)
             sourceAvailability[sourceID] = .ready
             publishAndPersist()
 
@@ -417,6 +427,7 @@ final class CodexTaskActivityStore: ObservableObject {
             remoteMonitorIDs.removeValue(forKey: key)
             sourceAvailability.removeValue(forKey: "remote:\(key)")
             lastSuccessfulReadBySource.removeValue(forKey: "remote:\(key)")
+            unconfirmedTasksBySource.removeValue(forKey: "remote:\(key)")
             _ = reducer.removeRunningTasks(sourceLabel: CodexRemoteHost.displayName(key))
         }
     }
@@ -469,15 +480,18 @@ final class CodexTaskActivityStore: ObservableObject {
                 else { return }
                 self.remoteDiscoveryInFlight = false
                 switch result {
-                case let .success(hosts):
+                case let .success(discovery):
                     self.lastSuccessfulReadBySource["remote-discovery"] = Date()
-                    self.sourceAvailability.removeValue(forKey: "remote-discovery")
-                    self.applyDiscoveredRemoteHosts(hosts, forceRestartUnavailable: forceRestartUnavailable)
-                case let .failure(error):
-                    let message = error == .unsupportedConnection
-                        ? "无法识别桌面端的 SSH 连接参数，保留已有监听与任务"
-                        : "无法读取桌面端的 SSH 连接，保留已有监听与任务"
-                    self.sourceAvailability["remote-discovery"] = .unavailable(message)
+                    if discovery.issues.isEmpty {
+                        self.sourceAvailability.removeValue(forKey: "remote-discovery")
+                    } else {
+                        let details = discovery.issues.prefix(3).map { "PID \($0.processID)：\($0.reason)" }.joined(separator: "；")
+                        self.sourceAvailability["remote-discovery"] = .unavailable("\(discovery.issues.count) 条远程连接未识别，其余连接继续监听。\(details)")
+                    }
+                    self.applyDiscoveredRemoteHosts(discovery.hosts, forceRestartUnavailable: forceRestartUnavailable)
+                case .failure:
+                    self.sourceAvailability["remote-discovery"] = .unavailable("无法读取桌面端的 SSH 连接，保留已有监听与任务")
+                    self.publishAndPersist()
                 }
                 if self.pendingForcedRemoteRefresh {
                     self.pendingForcedRemoteRefresh = false
@@ -548,7 +562,8 @@ final class CodexTaskActivityStore: ObservableObject {
                 CodexTaskSourceCoverage(
                     sourceLabel: key == "local" ? "本地" : key == "remote-discovery" ? "SSH 发现" : CodexRemoteHost.displayName(String(key.dropFirst("remote:".count))),
                     availability: sourceAvailability[key]!,
-                    lastSuccessfulReadAt: lastSuccessfulReadBySource[key]
+                    lastSuccessfulReadAt: lastSuccessfulReadBySource[key],
+                    unconfirmedTaskIDs: unconfirmedTasksBySource[key] ?? []
                 )
             }
         )
@@ -561,6 +576,7 @@ final class CodexTaskActivityStore: ObservableObject {
 
 private enum CodexTaskMonitorUpdate {
     case events([CodexTaskEvent], CodexTaskEventOrigin)
+    case excludedThreads(Set<String>)
     case ready
     case checkpoint(Date)
     case unavailable(String)
@@ -739,6 +755,7 @@ private final class CodexTaskMonitor {
     private let fileManager = FileManager.default
     private var timer: DispatchSourceTimer?
     private var sourcesByPath: [String: CodexTaskSource] = [:]
+    private var excludedThreadIDs = Set<String>()
     private var cursorsByPath: [String: CodexTaskFileCursor] = [:]
     private var modificationDatesByPath: [String: Date] = [:]
     private var potentialRunningIdentityByPath: [String: String] = [:]
@@ -945,18 +962,16 @@ private final class CodexTaskMonitor {
         } else {
             createdAtExpression = "0"
         }
-        let sourceFilter = columns.contains("thread_source")
-            ? "AND (thread_source IS NULL OR thread_source <> 'subagent')"
-            : ""
         let query = """
         SELECT id, rollout_path AS rolloutPath,
                \(selection("title", alias: "title")),
                \(selection("cwd", alias: "cwd")),
+               \(selection("source", alias: "source")),
+               \(selection("thread_source", alias: "threadSource")),
                \(createdAtExpression) AS createdAtMs
         FROM threads
         WHERE rollout_path IS NOT NULL
           AND rollout_path <> ''
-          \(sourceFilter)
         ORDER BY createdAtMs ASC;
         """
         let rows: [[String: Any]]
@@ -966,8 +981,17 @@ private final class CodexTaskMonitor {
         case let .failure(error):
             return .failure(error)
         }
+        let internalIDs = Set(rows.compactMap { row -> String? in
+            guard CodexTaskThreadPolicy.isInternal(threadSource: row["threadSource"] as? String, source: row["source"] as? String) else { return nil }
+            return CodexTaskIdentifier.validated(row["id"] as? String)
+        })
+        if internalIDs != excludedThreadIDs {
+            excludedThreadIDs = internalIDs
+            onUpdate(.excludedThreads(internalIDs))
+        }
         let sources = rows.compactMap { row -> CodexTaskSource? in
             guard let threadID = CodexTaskIdentifier.validated(row["id"] as? String),
+                  !internalIDs.contains(threadID),
                   let path = row["rolloutPath"] as? String,
                   fileManager.fileExists(atPath: path)
             else { return nil }

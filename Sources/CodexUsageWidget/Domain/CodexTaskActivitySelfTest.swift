@@ -22,11 +22,16 @@ enum CodexTaskActivitySelfTest {
         let chatGPTProcessList = """
           100   1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
           101 100 /Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper
-          102 101 /usr/bin/ssh -T -v -o BatchMode=yes example-remote sh -c command
+          102 101 /usr/bin/ssh -T -v -o BatchMode=yes example-remote sh -c 'codex app-server'
+          104 102 /bin/sh proxy-wrapper
+          105 104 /usr/bin/ssh -o ControlMaster=no -W example:22 jump-host
+          106 102 /usr/bin/ssh nested-host codex app-server
           200   1 /Applications/Visual Studio Code.app/Contents/MacOS/Electron
           201 200 /usr/bin/ssh -T ignored-vscode command
           300   1 /usr/bin/ssh -T orphaned-chatgpt-session command
-          103 100 /usr/bin/ssh -F /tmp/config -- second-remote command
+          103 100 /usr/bin/ssh -F /tmp/config -- second-remote codex app-server
+          107 100 /usr/bin/ssh shell-host uptime
+          108 100 /usr/bin/ssh -O check control-host
         """
         let discoveredHosts = ChatGPTSSHHostDiscovery.hosts(
             in: ChatGPTSSHHostDiscovery.parseProcessList(chatGPTProcessList)
@@ -47,11 +52,45 @@ enum CodexTaskActivitySelfTest {
         )
         expect(
             ChatGPTSSHHostDiscovery.hosts(
-                inSSHCommandList: "102 /usr/bin/ssh -T allowed-host command\n201 /usr/bin/ssh ignored-host command",
+                inSSHCommandList: "102 /usr/bin/ssh -T allowed-host codex app-server\n201 /usr/bin/ssh ignored-host codex app-server",
                 allowedProcessIDs: [102]
             ) == ["allowed-host"],
             "the second discovery phase must accept only SSH process IDs owned by ChatGPT"
         )
+
+        let mixedConnections = ChatGPTSSHHostDiscovery.connections(inSSHCommandList: """
+          102 /usr/bin/ssh -T -v -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=12 first-host codex app-server
+          103 /usr/bin/ssh -T -o BatchMode=yes second-host codex app-server
+          104 /usr/bin/ssh -i /tmp/custom-key third-host codex app-server
+          105 /usr/bin/ssh -o BatchMode=yes -o ControlMaster=no -o ControlPersist=no -o ProxyCommand=/usr/bin/false -o RemoteCommand=none -W target:10022 jump-host
+          106 /usr/bin/ssh -N tunnel-host
+        """, allowedProcessIDs: [102, 103, 104, 105, 106])
+        expect(mixedConnections.hosts == ["first-host", "second-host"] && mixedConnections.issues.map(\.processID) == [104],
+               "unsupported app-server connections must not hide valid peers or turn forwarding helpers into task hosts")
+        let disconnected = ChatGPTSSHHostDiscovery.connections(inSSHCommandList: "103 /usr/bin/ssh second-host codex app-server", allowedProcessIDs: [103])
+        expect(disconnected.hosts == ["second-host"] && disconnected.issues.isEmpty,
+               "a disconnected desktop task host must disappear independently of its peers")
+
+        for kind in ["subagent", "guardian_review"] {
+            expect(CodexTaskThreadPolicy.isInternal(threadSource: kind, source: nil), "internal thread types must be excluded")
+        }
+        expect(CodexTaskThreadPolicy.isInternal(threadSource: "new-internal-kind", source: #"{"subagent":{"other":"guardian"}}"#),
+               "source metadata must exclude internal agents even when thread_source changes")
+        for source in ["vscode", "cli", "invalid-json"] {
+            expect(!CodexTaskThreadPolicy.isInternal(threadSource: "user", source: source), "user threads must remain visible")
+            expect(!CodexTaskThreadPolicy.isInternal(threadSource: "automation", source: source), "automation threads must remain visible")
+        }
+        var cleanup = CodexTaskActivityReducer(persisted: .empty)
+        for (turn, thread, source) in [("internal-local", "internal", nil as String?), ("internal-remote", "internal", "remote"), ("user", "user", nil)] {
+            _ = cleanup.apply(CodexTaskEvent(turnID: turn, occurredAt: base,
+                metadata: .init(threadID: thread, title: "fixture", projectName: nil, sourceLabel: source), kind: .completed), origin: .live)
+        }
+        _ = cleanup.apply(CodexTaskEvent(turnID: "running-internal", occurredAt: base,
+            metadata: .init(threadID: "internal", title: "fixture", projectName: nil), kind: .started), origin: .live)
+        expect(cleanup.removeInternalThreads(["internal"], sourceLabel: nil), "migration must remove existing internal task evidence")
+        let cleaned = cleanup.snapshot(availability: .ready)
+        expect(cleaned.runningCount == 0 && cleaned.unreadCount == 2 && cleaned.recentCompletions.contains { $0.sourceLabel == "remote" },
+               "internal cleanup must be scoped to the source and preserve real task completions")
 
         expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -l alice example-remote command") == "alice@example-remote", "SSH user must survive discovery")
         expect(ChatGPTSSHHostDiscovery.sshHost(in: "/usr/bin/ssh -lalice example-remote command") == "alice@example-remote", "attached SSH user must survive discovery")
@@ -90,6 +129,13 @@ enum CodexTaskActivitySelfTest {
                "remote failure must not invalidate a healthy local source")
         expect(partial.confirmedRunningCount == 1 && partial.showsRed && !partial.showsGreen,
                "partial coverage must report confirmed local work without claiming all sources idle")
+        let discoveryPartial = CodexTaskActivitySnapshot(availability: .unavailable("Discovery issue"), runningTasks: [], recentCompletions: [],
+            sourceCoverage: [CodexTaskSourceCoverage(sourceLabel: "本地", availability: .ready, lastSuccessfulReadAt: base),
+                             CodexTaskSourceCoverage(sourceLabel: "first-host", availability: .ready, lastSuccessfulReadAt: base),
+                             CodexTaskSourceCoverage(sourceLabel: "second-host", availability: .ready, lastSuccessfulReadAt: base),
+                             CodexTaskSourceCoverage(sourceLabel: "SSH 发现", availability: .unavailable("Unsupported"), lastSuccessfulReadAt: base)])
+        expect(discoveryPartial.remoteCoverage.count == 2 && discoveryPartial.hasDiscoveryIssue && discoveryPartial.localCoverage?.availability == .ready,
+               "remote coverage must count hosts only, with local health and discovery failures separate")
 
         for host in ["-alice@example", "alice@-example", "alice@@example", "alice@example;bad", "例子"] {
             expect(CodexRemoteHost.validated(host) == nil, "remote destinations must reject ambiguous or unsafe characters")
@@ -514,6 +560,16 @@ enum CodexTaskActivitySelfTest {
         )
         connectionBackoff.reset()
         expect(connectionBackoff.connectionStage == 1, "manual reconnect must reset remote backoff")
+        var freshness = RemoteCodexFreshness()
+        freshness.begin(at: 100)
+        expect(!freshness.isExpired(at: 219) && freshness.isExpired(at: 220), "initial scan must have a bounded deadline")
+        freshness.confirm(at: 110)
+        expect(!freshness.isExpired(at: 144) && freshness.isExpired(at: 145), "an open SSH transport must expire without verified scans")
+        freshness.confirm(at: 130)
+        expect(!freshness.isExpired(at: 164) && freshness.isExpired(at: 165), "a successful scan must renew freshness")
+        freshness.begin(at: 200)
+        freshness.confirm(at: 205)
+        expect(!freshness.isExpired(at: 239), "reconnected readers must recover freshness")
         let remoteScript = RemoteCodexTaskMonitor.remoteScript
         expect(
             remoteScript.contains("separators=(\",\", \":\")")
@@ -576,10 +632,21 @@ enum CodexTaskActivitySelfTest {
         )
         expect(remoteScanStarted?.scanWatermark == base, "remote scans must announce their watermark before replay")
         let remoteReadyLine = """
-        {"kind":"ready","scan_started_at":\(base.timeIntervalSince1970)}
+        {"kind":"ready","scan_started_at":\(base.timeIntervalSince1970),"confirmed_tasks":[]}
         """
         let remoteReady = try? JSONDecoder().decode(RemoteCodexTaskEnvelope.self, from: Data(remoteReadyLine.utf8))
         expect(remoteReady?.scanWatermark == base, "remote ready must repeat the remote scan-start watermark")
+        expect(remoteReady?.confirmedIdentities == [], "verified scans must include task liveness")
+        let heartbeat = try? JSONDecoder().decode(RemoteCodexTaskEnvelope.self, from: Data("""
+        {"kind":"healthy","scan_started_at":\(base.timeIntervalSince1970 - 30),"confirmed_tasks":[{"thread_id":"remote-thread","turn_id":"stale"}]}
+        """.utf8))
+        expect(heartbeat?.scanWatermark == base.addingTimeInterval(-30)
+            && heartbeat?.confirmedIdentities == ["remote-thread:stale"], "clock rollback and confirmed task identities must survive heartbeats")
+        let quietTask = CodexRunningTask(id: "remote-thread:stale", turnID: "stale", threadID: "remote-thread", title: "Quiet", projectName: nil, sourceLabel: "remote", startedAt: base)
+        let quietSnapshot = CodexTaskActivitySnapshot(availability: .ready, runningTasks: [quietTask], recentCompletions: [],
+            sourceCoverage: [CodexTaskSourceCoverage(sourceLabel: "remote", availability: .ready, lastSuccessfulReadAt: base, unconfirmedTaskIDs: [quietTask.id])])
+        expect(quietSnapshot.confirmedRunningCount == 0 && quietSnapshot.unconfirmedRunningCount == 1
+            && !quietSnapshot.showsRed && !quietSnapshot.showsGreen, "unknown task state must not claim running or idle while its monitor is healthy")
         let invalidRemoteReady = try? JSONDecoder().decode(
             RemoteCodexTaskEnvelope.self,
             from: Data(#"{"kind":"ready"}"#.utf8)

@@ -19,7 +19,7 @@ struct QuotaEvidence: Equatable {
         switch source {
         case .rpc: return "官方 RPC · \(Self.time(receivedAt))"
         case .localHistory: return "本地历史 · \(Self.time(observedAt)) · 账户未验证"
-        case .retained: return "上次官方结果 · \(Self.time(lastOfficialSuccessAt)) · stale"
+        case .retained: return "上次官方结果 · \(Self.time(lastOfficialSuccessAt)) · 待更新"
         case .unknown: return "当前额度未确认"
         }
     }

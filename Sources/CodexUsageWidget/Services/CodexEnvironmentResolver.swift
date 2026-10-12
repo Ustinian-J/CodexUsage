@@ -42,7 +42,8 @@ struct CodexEnvironmentResolver {
         return version
     }
 
-    init(context: RuntimeLoadContext, variables: [String: String] = ProcessInfo.processInfo.environment) {
+    init(context: RuntimeLoadContext, variables: [String: String] = ProcessInfo.processInfo.environment,
+         desktopApplications: [URL]? = nil) {
         dataDirectory = variables["CODEX_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? context.homeDirectory.appendingPathComponent(".codex", isDirectory: true)
         cacheDirectory = context.cacheDirectory
@@ -51,10 +52,18 @@ struct CodexEnvironmentResolver {
             executablePath = FileManager.default.isExecutableFile(atPath: override) ? override : nil
             return
         }
-        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") {
-            candidates.append(app.appendingPathComponent("Contents/Resources/codex").path)
+        let applications = desktopApplications ?? (
+            ["com.openai.codex", "com.openai.chat"].compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+            + [URL(fileURLWithPath: "/Applications/Codex.app"), URL(fileURLWithPath: "/Applications/ChatGPT.app")]
+        )
+        for app in applications {
+            candidates += [
+                "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+                "Contents/Resources/codex-cli/bin/codex",
+                "Contents/Resources/codex"
+            ].map { app.appendingPathComponent($0).path }
         }
-        candidates += ["/Applications/Codex.app/Contents/Resources/codex", "/Applications/ChatGPT.app/Contents/Resources/codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"]
+        candidates += ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"]
         candidates += (variables["PATH"] ?? "").split(separator: ":").map { String($0) + "/codex" }
         executablePath = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }

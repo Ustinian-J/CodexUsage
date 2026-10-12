@@ -352,7 +352,8 @@ struct RuntimeSummaryCard: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.primary)
                     Spacer()
-                    Text(summary.status.localized(language))
+                    Text(summary.scope == .codex && summary.status == .stale
+                        ? language.text("待更新", "Update pending") : summary.status.localized(language))
                         .font(.system(size: 10, weight: .bold))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -556,7 +557,9 @@ struct RuntimeSummaryCard: View {
         if language.isChinese {
             switch summary.scope {
             case .codex:
-                if hasQuota { return "官方额度 + 本机统计" }
+                if hasQuota {
+                    return summary.status == .stale ? "\(summary.sourceLabel) · 本机统计" : "官方额度 + 本机统计"
+                }
                 return summary.status == .available
                     ? "官方额度：当前无限制 · 本机统计"
                     : "本机统计；额度暂不可用"
@@ -569,7 +572,7 @@ struct RuntimeSummaryCard: View {
         }
         switch summary.scope {
         case .codex:
-            if hasQuota { return "Official quota + local records" }
+            if hasQuota { return summary.status == .stale ? "Unconfirmed quota + local records" : "Official quota + local records" }
             return summary.status == .available
                 ? "Official quota: no active limits · local records"
                 : "Local records; quota unavailable"

@@ -34,7 +34,7 @@ struct TaskActivityCard: View {
             }
 
             if !snapshot.sourceCoverage.isEmpty {
-                Text(language.text("监听覆盖 \(snapshot.sourceCoverage.filter { $0.availability == .ready }.count)/\(snapshot.sourceCoverage.count)", "Monitor coverage \(snapshot.sourceCoverage.filter { $0.availability == .ready }.count)/\(snapshot.sourceCoverage.count)"))
+                Text(coverageText)
                     .font(.system(size: 9)).foregroundStyle(.secondary)
                     .help(snapshot.sourceCoverage.map { source in
                         let date = source.lastSuccessfulReadAt.map { $0.formatted(date: .omitted, time: .standard) } ?? "--"
@@ -88,7 +88,27 @@ struct TaskActivityCard: View {
         compactMessage(icon: activityIcon, text: activityText)
     }
 
+    private var coverageText: String {
+        let local = snapshot.localCoverage?.availability == .ready
+            ? language.text("本地正常", "Local ready")
+            : language.text("本地状态未确认", "Local unconfirmed")
+        let remote: String
+        if !snapshot.remoteMonitoringEnabled {
+            remote = language.text("远程监听已关闭", "Remote monitoring off")
+        } else if snapshot.remoteCoverage.isEmpty {
+            remote = snapshot.hasDiscoveryIssue
+                ? language.text("远程发现异常", "Remote discovery unavailable")
+                : language.text("未发现远程连接", "No remote connections")
+        } else {
+            let ready = snapshot.remoteCoverage.filter { $0.availability == .ready }.count
+            remote = language.text("远程 \(ready)/\(snapshot.remoteCoverage.count) 台正常", "Remote \(ready)/\(snapshot.remoteCoverage.count) hosts ready")
+                + (snapshot.hasDiscoveryIssue ? language.text(" · 部分连接未识别", " · some connections unrecognized") : "")
+        }
+        return local + " · " + remote
+    }
+
     private var activityIcon: String {
+        if snapshot.unconfirmedRunningCount > 0 { return "questionmark.circle" }
         if snapshot.runningCount > 0 { return "gearshape.2" }
         if snapshot.unreadCount > 0 { return "bell.badge" }
         return "checkmark.circle"
@@ -97,6 +117,12 @@ struct TaskActivityCard: View {
     private var activityText: String {
         if snapshot.availability != .ready {
             return language.text("\(snapshot.confirmedRunningCount) 个任务执行中 · 异常来源状态未确认", "\(snapshot.confirmedRunningCount) running · unavailable sources unconfirmed")
+        }
+        if snapshot.unconfirmedRunningCount > 0 {
+            return language.text(
+                "\(snapshot.confirmedRunningCount) 个任务执行中 · \(snapshot.unconfirmedRunningCount) 个状态未知",
+                "\(snapshot.confirmedRunningCount) running · \(snapshot.unconfirmedRunningCount) unconfirmed"
+            )
         }
         if snapshot.runningCount > 0, snapshot.unreadCount > 0 {
             return language.text(
@@ -153,6 +179,9 @@ struct TaskActivityCard: View {
                 ? language.text("部分监听异常", "Some monitors unavailable")
                 : language.text("监控不可用", "Monitor unavailable")
         case .ready:
+            if snapshot.unconfirmedRunningCount > 0 {
+                return language.text("监听正常 · 部分任务状态未知", "Monitors ready · some task states unknown")
+            }
             let source = snapshot.remoteHosts.isEmpty || !snapshot.remoteMonitoringEnabled
                 ? language.text("本机", "Local")
                 : language.text(

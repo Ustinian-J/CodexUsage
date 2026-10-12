@@ -119,7 +119,7 @@ enum CodexRateLimitNormalizerSelfTest {
             incoming: [failedRefresh]
         )[0]
         expect(
-            retainedAgain.quotaSourceLabel == "test · stale",
+            retainedAgain.quotaSourceLabel == retained.quotaSourceLabel,
             "repeated failures should not append duplicate stale source markers"
         )
 
@@ -180,6 +180,12 @@ enum CodexRateLimitNormalizerSelfTest {
             expect(cleared.snapshot.fiveHourQuota == nil && cleared.snapshot.sevenDayQuota == nil,
                    "account/environment change, unknown identity, expiry and reset must clear retained windows")
         }
+
+        let expiredFive = RateWindow(usedPercent: 90, windowDurationMins: 300, resetsAt: origin)
+        let partlyExpired = runtime(status: .available, quotaReadSucceeded: true, fiveHour: expiredFive, sevenDay: sevenDay)
+        let afterReset = RuntimeQuotaContinuity.reconcile(previous: [partlyExpired], incoming: [failed(identity: "test-account", time: origin)])[0]
+        expect(afterReset.snapshot.fiveHourQuota == nil && afterReset.snapshot.sevenDayQuota == sevenDay && afterReset.status == .stale,
+               "a reset short window must not discard a still-valid weekly window")
 
         if failures.isEmpty {
             print("Codex rate-limit normalizer self-test passed")

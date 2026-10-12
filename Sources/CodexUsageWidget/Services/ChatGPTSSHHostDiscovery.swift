@@ -10,7 +10,16 @@ struct ChatGPTProcessRecord: Equatable {
 enum ChatGPTSSHHostDiscoveryError: Error {
     case unavailable
     case invalidOutput
-    case unsupportedConnection
+}
+
+struct ChatGPTSSHDiscoveryIssue: Equatable {
+    let processID: Int32
+    let reason: String
+}
+
+struct ChatGPTSSHDiscoverySnapshot: Equatable {
+    let hosts: [String]
+    let issues: [ChatGPTSSHDiscoveryIssue]
 }
 
 enum ChatGPTSSHHostDiscovery {
@@ -19,7 +28,7 @@ enum ChatGPTSSHHostDiscovery {
     private static let maximumOutputBytes = 4 * 1_024 * 1_024
 
 
-    static func discover() -> Result<[String], ChatGPTSSHHostDiscoveryError> {
+    static func discover() -> Result<ChatGPTSSHDiscoverySnapshot, ChatGPTSSHHostDiscoveryError> {
         guard FileManager.default.isExecutableFile(atPath: "/bin/ps") else {
             return .failure(.unavailable)
         }
@@ -30,22 +39,14 @@ enum ChatGPTSSHHostDiscovery {
         else { return .failure(.invalidOutput) }
         let snapshot = parseProcessList(snapshotText)
         let sshProcessIDs = chatGPTSSHProcessIDs(in: snapshot)
-        guard !sshProcessIDs.isEmpty else { return .success([]) }
+        guard !sshProcessIDs.isEmpty else { return .success(.init(hosts: [], issues: [])) }
         let processList = sshProcessIDs.map(String.init).joined(separator: ",")
         guard case let .success(commandData) = runPS(
             arguments: ["-ww", "-p", processList, "-o", "pid=,args="],
             maximumBytes: 256 * 1_024
         ), let commandText = String(data: commandData, encoding: .utf8)
         else { return .failure(.invalidOutput) }
-        // ps does not preserve argv quoting. Refuse connections whose options
-        // cannot be reproduced instead of silently monitoring a different host.
-        for line in commandText.split(whereSeparator: \Character.isNewline) {
-            let fields = line.split(maxSplits: 1, whereSeparator: \Character.isWhitespace)
-            guard fields.count == 2, let pid = Int32(fields[0]), sshProcessIDs.contains(pid),
-                  sshHost(in: String(fields[1])) != nil
-            else { return .failure(.unsupportedConnection) }
-        }
-        return .success(hosts(inSSHCommandList: commandText, allowedProcessIDs: Set(sshProcessIDs)))
+        return .success(connections(inSSHCommandList: commandText, allowedProcessIDs: Set(sshProcessIDs)))
     }
 
     private static func runPS(
@@ -107,35 +108,40 @@ enum ChatGPTSSHHostDiscovery {
     }
 
     static func hosts(in records: [ChatGPTProcessRecord]) -> [String] {
-        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.processID, $0) })
-        let chatGPTRoots = Set(records.compactMap { record -> Int32? in
-            isChatGPTExecutable(firstArgument(in: record.arguments)) ? record.processID : nil
-        })
-        guard !chatGPTRoots.isEmpty else { return [] }
-
-        var seen = Set<String>()
-        return records.compactMap { record -> String? in
-            guard isSSHExecutable(firstArgument(in: record.arguments)),
-                  hasAncestor(record.parentProcessID, in: chatGPTRoots, recordsByID: byID),
-                  let host = sshHost(in: record.arguments),
-                  seen.insert(host.lowercased()).inserted
-            else { return nil }
-            return host
-        }.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        connections(
+            inSSHCommandList: records.map { "\($0.processID) \($0.arguments)" }.joined(separator: "\n"),
+            allowedProcessIDs: Set(chatGPTSSHProcessIDs(in: records))
+        ).hosts
     }
 
     static func hosts(inSSHCommandList output: String, allowedProcessIDs: Set<Int32>) -> [String] {
+        connections(inSSHCommandList: output, allowedProcessIDs: allowedProcessIDs).hosts
+    }
+
+    static func connections(inSSHCommandList output: String, allowedProcessIDs: Set<Int32>) -> ChatGPTSSHDiscoverySnapshot {
         var seen = Set<String>()
-        return output.split(whereSeparator: \Character.isNewline).compactMap { line -> String? in
+        var hosts: [String] = []
+        var issues: [ChatGPTSSHDiscoveryIssue] = []
+        for line in output.split(whereSeparator: \Character.isNewline) {
             let fields = line.split(maxSplits: 1, whereSeparator: \Character.isWhitespace)
             guard fields.count == 2,
                   let processID = Int32(fields[0]),
-                  allowedProcessIDs.contains(processID),
-                  let host = sshHost(in: String(fields[1])),
-                  seen.insert(host.lowercased()).inserted
-            else { return nil }
-            return host
-        }.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                  allowedProcessIDs.contains(processID)
+            else { continue }
+            let command = String(fields[1])
+            // A desktop-owned shell may also run unrelated SSH commands. Only
+            // the remote app-server session is a task source, not its transport.
+            guard command.range(of: #"(?:^|[\s'\"])app-server(?:$|[\s'\";])"#, options: .regularExpression) != nil else { continue }
+            guard let host = sshHost(in: command) else {
+                // Keep successful peers even when one connection cannot be
+                // reconstructed from ps (which does not preserve argv quoting).
+                issues.append(.init(processID: processID, reason: "SSH 参数无法安全重建"))
+                continue
+            }
+            if seen.insert(host.lowercased()).inserted { hosts.append(host) }
+        }
+        return .init(hosts: hosts.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
+                     issues: issues.sorted { $0.processID < $1.processID })
     }
 
     static func sshHost(in commandLine: String) -> String? {
@@ -224,12 +230,12 @@ enum ChatGPTSSHHostDiscovery {
 
     private static func chatGPTSSHProcessIDs(in records: [ChatGPTProcessRecord]) -> [Int32] {
         let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.processID, $0) })
-        let roots = Set(records.compactMap { record -> Int32? in
+        let chatGPTRoots = Set(records.compactMap { record -> Int32? in
             isChatGPTExecutable(firstArgument(in: record.arguments)) ? record.processID : nil
         })
         return records.compactMap { record in
             isSSHExecutable(firstArgument(in: record.arguments))
-                && hasAncestor(record.parentProcessID, in: roots, recordsByID: byID)
+                && hasAncestor(record.parentProcessID, in: chatGPTRoots, recordsByID: byID)
                 ? record.processID : nil
         }.sorted()
     }
@@ -253,6 +259,9 @@ enum ChatGPTSSHHostDiscovery {
         while processID > 0, visited.insert(processID).inserted {
             if roots.contains(processID) { return true }
             guard let record = recordsByID[processID] else { return false }
+            // An SSH child of another SSH process is a proxy/control helper,
+            // even when a shell wrapper sits between the two processes.
+            if isSSHExecutable(firstArgument(in: record.arguments)) { return false }
             processID = record.parentProcessID
         }
         return false

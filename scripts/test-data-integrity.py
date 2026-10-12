@@ -43,6 +43,17 @@ for raw in sys.stdin:
     elif ident == 2:
         result = {"account":{"type":"chatgpt","email":"fixture@example.test","planType":"pro"}}
     elif ident == 3:
+        if mode == "continuity":
+            from pathlib import Path
+            counter = Path(os.environ["FIXTURE_COUNTER"])
+            count = int(counter.read_text()) + 1 if counter.exists() else 1
+            counter.write_text(str(count))
+            if count == 2:
+                print(json.dumps({"id":3,"error":{"code":-32000,"message":"fixture transient quota failure"}}), flush=True)
+                continue
+            result = {"rateLimits":{"limitId":"codex","primary":{"usedPercent":17 if count == 1 else 23,"windowDurationMins":300,"resetsAt":int(time.time())+3600},"secondary":None}}
+            print(json.dumps({"id":ident,"result":result}), flush=True)
+            continue
         if mode in ("error", "initerror"):
             print(json.dumps({"id":3,"error":{"message":"fixture quota failed"}}), flush=True)
             continue
@@ -82,11 +93,16 @@ for raw in sys.stdin:
     assert value["primary"]["remainingPercent"] == 89, "Must compare quota event times, not thread times"
     assert not value["quotaReadSucceeded"] and value["quotaEvidence"]["source"] == "localHistory"
     assert not value["quotaEvidence"]["accountVerified"]
+    subprocess.check_call([str(BINARY), "--self-test-quota-continuity"],
+        env=dict(env,FIXTURE_MODE="continuity",FIXTURE_COUNTER=str(base/"quota-request-count")), timeout=12)
     for mode in ("initerror","exit","initexit","stderr"):
         value,elapsed=dump(mode)
         assert elapsed < 5, (mode,elapsed)
         if mode == "stderr": assert value["quotaReadSucceeded"]
-        else: assert not value["quotaReadSucceeded"]
+        else:
+            assert not value["quotaReadSucceeded"]
+            if mode in ("exit", "initexit"):
+                assert any("app-server 在完成额度读取前退出" in message for message in value["messages"]), value["messages"]
     # Persisted append checkpoints retain cumulative counters and count new events once.
     with newer.open("a") as stream: stream.write(json.dumps(usage(1000150,now))+"\n")
     value,_=dump()

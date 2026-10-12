@@ -643,6 +643,7 @@ final class UsageStore: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self, self.statisticsPreference.selection == .system else { return }
+            self.applyTaskBoard(self.runtimeSnapshot(for: .codex)?.snapshot.taskBoard, for: .codex)
             self.scheduleStatisticsRollover()
             self.refresh(queueIfBusy: true)
         }
@@ -769,6 +770,7 @@ final class UsageStore: ObservableObject {
         guard repaired != statisticsPreference else { return }
         refreshGeneration &+= 1
         statisticsPreference = repaired
+        applyTaskBoard(runtimeSnapshot(for: .codex)?.snapshot.taskBoard, for: .codex)
         StatisticsTimeZonePreferenceStore.save(repaired)
         scheduleStatisticsRollover()
         isSwitchingStatisticsTimeZone = true
@@ -855,6 +857,7 @@ final class UsageStore: ObservableObject {
         let start = context.calendar.startOfDay(for: context.now)
         guard let nextDay = context.calendar.date(byAdding: .day, value: 1, to: start) else { return }
         statisticsRolloverTimer = Timer(fire: nextDay.addingTimeInterval(1), interval: 0, repeats: false) { [weak self] _ in
+            if let self { self.applyTaskBoard(self.runtimeSnapshot(for: .codex)?.snapshot.taskBoard, for: .codex) }
             self?.scheduleStatisticsRollover()
             self?.refresh(queueIfBusy: true)
         }
@@ -1081,6 +1084,49 @@ final class UsageStore: ObservableObject {
             return false
         }
         let countLock = NSLock()
+        let formatter = ISO8601DateFormatter()
+        func date(_ value: String) -> Date { formatter.date(from: value)! }
+        let boardNow = date("2026-10-12T01:00:00Z")
+        func finished(_ id: String, _ timestamp: String, _ outcome: CodexTaskOutcome = .completed) -> CodexTaskCompletion {
+            CodexTaskCompletion(id: id, turnID: id, threadID: id, title: id, projectName: nil,
+                completedAt: date(timestamp), outcome: outcome, readAt: nil)
+        }
+        let historicalRecords = [
+            finished("previous-day", "2026-10-10T23:00:00Z"),
+            finished("timezone-boundary", "2026-10-11T17:00:00Z"),
+            finished("today", "2026-10-12T00:30:00Z"),
+            finished("today-interrupted", "2026-10-12T00:40:00Z", .interrupted),
+            finished("old-interrupted", "2026-10-10T23:00:00Z", .interrupted),
+            finished("next-day", "2026-10-13T00:00:00Z")
+        ]
+        let overnight = CodexRunningTask(id: "overnight", turnID: "overnight", threadID: "overnight", title: "Overnight", projectName: nil, startedAt: date("2026-10-10T23:00:00Z"))
+        store.taskActivity = CodexTaskActivitySnapshot(availability: .ready, runningTasks: [overnight], recentCompletions: historicalRecords)
+        func itemIDs(_ board: TaskBoard, _ column: TaskColumnKind) -> Set<String> {
+            Set(board.columns.first { $0.id == column }?.items.map(\.id) ?? [])
+        }
+        store.statisticsPreference = StatisticsTimeZonePreference(selection: .utc, fixedIdentifier: "UTC")
+        let utcBoard = store.eventTaskBoard(nil, now: boardNow)
+        store.statisticsPreference = StatisticsTimeZonePreference(selection: .fixed, fixedIdentifier: "Asia/Shanghai")
+        let shanghaiBoard = store.eventTaskBoard(nil, now: boardNow)
+        let nextDayBoard = store.eventTaskBoard(nil, now: date("2026-10-13T01:00:00Z"))
+        guard itemIDs(utcBoard, .done) == ["today"], itemIDs(utcBoard, .pending) == ["today-interrupted"],
+              itemIDs(shanghaiBoard, .done) == ["timezone-boundary", "today"],
+              itemIDs(nextDayBoard, .done) == ["next-day"], itemIDs(nextDayBoard, .pending).isEmpty,
+              itemIDs(nextDayBoard, .active) == ["overnight"], store.taskActivity.unreadCount == historicalRecords.count else {
+            print("data integrity self-test failed: today board leaked history, lost overnight tasks or changed unread history")
+            return false
+        }
+        store.statisticsPreference = StatisticsTimeZonePreference(selection: .fixed, fixedIdentifier: "America/Los_Angeles")
+        store.taskActivity = CodexTaskActivitySnapshot(availability: .ready, runningTasks: [], recentCompletions: [
+            finished("before-DST-day", "2026-03-08T07:59:59Z"),
+            finished("DST-day-start", "2026-03-08T08:00:00Z"),
+            finished("DST-day-end", "2026-03-09T06:59:59Z"),
+            finished("after-DST-day", "2026-03-09T07:00:00Z")
+        ])
+        guard itemIDs(store.eventTaskBoard(nil, now: date("2026-03-08T12:00:00Z")), .done) == ["DST-day-start", "DST-day-end"] else {
+            print("data integrity self-test failed: today board must respect the 23-hour DST day")
+            return false
+        }
         var quotaQueries = 0
         let independent = UsageStore(quotaLoader: {
             countLock.lock(); quotaQueries += 1; countLock.unlock()
@@ -1129,15 +1175,18 @@ final class UsageStore: ObservableObject {
         applyTaskBoard(runtimeSnapshot(for: .codex)?.snapshot.taskBoard, for: .codex)
     }
 
-    private func eventTaskBoard(_ fallback: TaskBoard?) -> TaskBoard {
-        let healthy = taskActivity.availability == .ready
+    private func eventTaskBoard(_ fallback: TaskBoard?, now: Date = Date()) -> TaskBoard {
+        let healthy = taskActivity.availability == .ready && taskActivity.unconfirmedRunningCount == 0
+        let context = StatisticsContext(preference: statisticsPreference, now: now)
         let running = taskActivity.runningTasks.map { task in
-            let sourceReady = taskActivity.isSourceReady(task.sourceLabel)
+            let sourceReady = taskActivity.isTaskConfirmed(task)
             return TaskItem(id: task.id, code: "COD-" + task.threadID.suffix(4).uppercased(), title: task.title,
                 detail: [task.projectName, task.sourceLabel].compactMap { $0 }.joined(separator: " · "),
                 chip: sourceReady ? "Running" : "Unknown", updatedAt: task.startedAt, tokens: 0, kind: sourceReady ? .active : .pending)
         }
-        let completions = taskActivity.recentCompletions.map { task in
+        let completions = taskActivity.recentCompletions.filter {
+            context.calendar.isDate($0.completedAt, inSameDayAs: now)
+        }.map { task in
             TaskItem(id: task.id, code: "COD-" + task.threadID.suffix(4).uppercased(), title: task.title,
                 detail: [task.projectName, task.sourceLabel].compactMap { $0 }.joined(separator: " · "),
                 chip: task.outcome == .completed ? "Review" : "Interrupted", updatedAt: task.completedAt, tokens: 0,
@@ -1147,7 +1196,7 @@ final class UsageStore: ObservableObject {
         let active = running.filter { $0.kind == .active }
         let pending = running.filter { $0.kind == .pending } + completions.filter { $0.kind == .pending }
         let done = completions.filter { $0.kind == .done }
-        return TaskBoard(refreshedAt: Date(), columns: [
+        return TaskBoard(refreshedAt: now, columns: [
             TaskColumn(id: .active, title: "正在运行", count: active.count, items: active),
             TaskColumn(id: .pending, title: healthy ? "中断 / 待处理" : "状态未知 / 中断", count: pending.count, items: pending),
             TaskColumn(id: .scheduled, title: "定时", count: scheduled.count, items: scheduled),
@@ -1249,6 +1298,43 @@ final class CodexUsageReader {
                              local: nil, taskBoard: nil, messages: messages, quotaEvidence: result.evidence)
     }
 
+    static func runQuotaContinuityIntegrationSelfTest() -> Bool {
+        let reader = CodexUsageReader()
+        func runtime(_ snapshot: UsageSnapshot) -> RuntimeUsageSnapshot {
+            RuntimeUsageSnapshot(scope: .codex, snapshot: snapshot,
+                status: snapshot.quotaReadSucceeded ? .available : .stale,
+                quotaSourceLabel: snapshot.quotaEvidence?.label ?? "unknown", usageSourceLabel: "fixture")
+        }
+        let first = runtime(reader.loadQuota(context: .live()))
+        let failed = runtime(reader.loadQuota(context: .live()))
+        guard first.snapshot.quotaReadSucceeded,
+              !failed.snapshot.quotaReadSucceeded,
+              failed.snapshot.quotaEvidence?.source == .localHistory,
+              first.snapshot.quotaEvidence?.accountIdentity != nil,
+              first.snapshot.quotaEvidence?.accountIdentity == failed.snapshot.quotaEvidence?.accountIdentity else {
+            print("quota continuity integration failed: historical fallback lost the current account")
+            return false
+        }
+        let retained = RuntimeQuotaContinuity.reconcile(previous: [first], incoming: [failed])[0]
+        guard retained.status == .stale, retained.snapshot.quotaEvidence?.source == .retained,
+              retained.snapshot.fiveHourQuota == first.snapshot.fiveHourQuota,
+              retained.snapshot.fiveHourQuota != failed.snapshot.fiveHourQuota,
+              !retained.snapshot.quotaReadSucceeded else {
+            print("quota continuity integration failed: failure replaced confirmed quota with history or nothing")
+            return false
+        }
+        let recovered = runtime(reader.loadQuota(context: .live()))
+        let reconciled = RuntimeQuotaContinuity.reconcile(previous: [retained], incoming: [recovered])[0]
+        guard reconciled.status == .available, reconciled.snapshot.quotaReadSucceeded,
+              reconciled.snapshot.quotaEvidence?.source == .rpc,
+              reconciled.snapshot.fiveHourQuota?.remainingPercent == 77 else {
+            print("quota continuity integration failed: official recovery did not replace retained data")
+            return false
+        }
+        print("quota continuity integration passed: official → failure with history → official recovery")
+        return true
+    }
+
     func loadTaskBoard(context: RuntimeLoadContext) -> TaskBoard? {
         environment = CodexEnvironmentResolver(context: context)
         var messages: [String] = []
@@ -1325,6 +1411,7 @@ final class CodexUsageReader {
         var completed = Set<Int>()
         var receivedAt: Date?
         var sentAccountRequests = false
+        var reachedEOF = false
         var appServerMessages: [String] = []
 
         func markComplete(_ id: Int) {
@@ -1392,6 +1479,9 @@ final class CodexUsageReader {
         output.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else {
+                lock.lock()
+                reachedEOF = true
+                lock.unlock()
                 markComplete(2); markComplete(3)
                 return
             }
@@ -1450,6 +1540,9 @@ final class CodexUsageReader {
         lock.lock()
         var finalSnapshot = snapshot
         var finalAppServerMessages = appServerMessages
+        if !snapshot.quotaReadSucceeded && reachedEOF && finalAppServerMessages.isEmpty {
+            finalAppServerMessages.append("app-server 在完成额度读取前退出（退出码：\(process.terminationStatus)）；请检查 Codex 可执行文件")
+        }
         lock.unlock()
 
         finalSnapshot.evidence = QuotaEvidence(
@@ -1464,7 +1557,15 @@ final class CodexUsageReader {
            var localSnapshot = readLatestLocalRateLimitSnapshot() {
             // Historical logs cannot prove which account produced their quota.
             localSnapshot.account = finalSnapshot.account
-            localSnapshot.evidence?.failure = finalAppServerMessages.first ?? "官方额度未确认"
+            if let history = localSnapshot.evidence {
+                // Log quota is unverified; account/read independently confirms
+                // the current account used by continuity reconciliation.
+                localSnapshot.evidence = QuotaEvidence(source: .localHistory,
+                    queriedAt: queriedAt, receivedAt: nil, observedAt: history.observedAt,
+                    lastOfficialSuccessAt: nil, environment: environment.dataDirectory.path,
+                    accountIdentity: finalSnapshot.account?.identity,
+                    failure: finalAppServerMessages.first ?? "官方额度未确认")
+            }
             finalSnapshot = localSnapshot
             finalAppServerMessages.append("本地历史额度 · 账户一致性未验证；本次查询未成功")
         }
@@ -9919,7 +10020,7 @@ struct CodexSMain {
         }
 
         if CommandLine.arguments.contains("--self-test-data-integrity") {
-            exit(UsageStore.runDataIntegritySelfTest() && CodexUsageReader.runProtocolFixturesSelfTest() ? 0 : 1)
+            exit(CodexEnvironmentResolverSelfTest.run() && UsageStore.runDataIntegritySelfTest() && CodexUsageReader.runProtocolFixturesSelfTest() ? 0 : 1)
         }
         if CommandLine.arguments.contains("--self-test-rate-limits") {
             exit(CodexRateLimitNormalizerSelfTest.run() ? 0 : 1)
@@ -9971,9 +10072,19 @@ struct CodexSMain {
 
         if CommandLine.arguments.contains("--probe-task-discovery") {
             switch ChatGPTSSHHostDiscovery.discover() {
-            case let .success(hosts): print("SSH discovery succeeded: \(hosts.count) connection(s)"); exit(0)
+            case let .success(discovery):
+                print("SSH discovery: \(discovery.hosts.count) task host(s), \(discovery.issues.count) issue(s)")
+                for host in discovery.hosts { print("Task host: \(CodexRemoteHost.displayName(host))") }
+                for issue in discovery.issues { print("PID \(issue.processID): \(issue.reason)") }
+                exit(discovery.issues.isEmpty ? 0 : 1)
             case let .failure(error): print("SSH discovery failed: \(error)"); exit(1)
             }
+        }
+        if CommandLine.arguments.contains("--probe-remote-tasks") {
+            exit(CodexRemoteTaskProbe.run() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--self-test-quota-continuity") {
+            exit(CodexUsageReader.runQuotaContinuityIntegrationSelfTest() ? 0 : 1)
         }
         if CommandLine.arguments.contains("--dump-json") {
             dumpJSON(MultiRuntimeUsageReader().load())

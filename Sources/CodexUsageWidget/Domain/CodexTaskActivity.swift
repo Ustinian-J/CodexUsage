@@ -31,6 +31,16 @@ enum CodexTaskMonitorAvailability: Equatable {
     case unavailable(String)
 }
 
+enum CodexTaskThreadPolicy {
+    static func isInternal(threadSource: String?, source: String?) -> Bool {
+        if threadSource == "subagent" || threadSource == "guardian_review" { return true }
+        guard let data = source?.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return object["subagent"] != nil
+    }
+}
+
 enum CodexTaskOutcome: String, Codable, Equatable {
     case completed
     case interrupted
@@ -150,6 +160,7 @@ struct CodexTaskSourceCoverage: Equatable {
     let sourceLabel: String
     let availability: CodexTaskMonitorAvailability
     let lastSuccessfulReadAt: Date?
+    var unconfirmedTaskIDs: Set<String> = []
 }
 
 struct CodexTaskActivitySnapshot: Equatable {
@@ -186,13 +197,25 @@ struct CodexTaskActivitySnapshot: Equatable {
     var unreadCount: Int { recentCompletions.filter { $0.readAt == nil }.count }
     var isPartiallyAvailable: Bool { availability != .ready && sourceCoverage.contains { $0.availability == .ready } }
 
+    var localCoverage: CodexTaskSourceCoverage? { sourceCoverage.first { $0.sourceLabel == "本地" } }
+    var remoteCoverage: [CodexTaskSourceCoverage] {
+        sourceCoverage.filter { $0.sourceLabel != "本地" && $0.sourceLabel != "SSH 发现" }
+    }
+    var hasDiscoveryIssue: Bool { sourceCoverage.contains { $0.sourceLabel == "SSH 发现" } }
+
     func isSourceReady(_ sourceLabel: String?) -> Bool {
         guard !sourceCoverage.isEmpty else { return availability == .ready }
         let label = sourceLabel ?? "本地"
         return sourceCoverage.first { $0.sourceLabel == label }?.availability == .ready
     }
 
-    var confirmedRunningCount: Int { runningTasks.filter { isSourceReady($0.sourceLabel) }.count }
+    func isTaskConfirmed(_ task: CodexRunningTask) -> Bool {
+        isSourceReady(task.sourceLabel)
+            && !(sourceCoverage.first { $0.sourceLabel == (task.sourceLabel ?? "本地") }?.unconfirmedTaskIDs.contains(task.id) ?? false)
+    }
+
+    var confirmedRunningCount: Int { runningTasks.filter(isTaskConfirmed).count }
+    var unconfirmedRunningCount: Int { runningCount - confirmedRunningCount }
     var showsRed: Bool { confirmedRunningCount > 0 }
     var showsYellow: Bool { unreadCount > 0 }
     var showsGreen: Bool { availability == .ready && runningCount == 0 }
@@ -413,6 +436,16 @@ struct CodexTaskActivityReducer {
 
         completions[index].readAt = date
         return true
+    }
+
+    mutating func removeInternalThreads(_ threadIDs: Set<String>, sourceLabel: String?) -> Bool {
+        let oldRunningCount = runningByIdentity.count
+        let oldCompletionCount = completions.count
+        runningByIdentity = runningByIdentity.filter {
+            $0.value.sourceLabel != sourceLabel || !threadIDs.contains($0.value.threadID)
+        }
+        completions.removeAll { $0.sourceLabel == sourceLabel && threadIDs.contains($0.threadID) }
+        return oldRunningCount != runningByIdentity.count || oldCompletionCount != completions.count
     }
 
     mutating func markAllRead(at date: Date = Date()) -> Bool {
